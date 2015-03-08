@@ -10,11 +10,10 @@ namespace Mono.Terminal
 
         [<EntryPoint>]
         let main argv = 
-            let le = new LineEditor()
             let mutable editorState = makeGlobalState (Some("foo")) 100
             let mutable s = Some("")
             while s.IsSome do
-                let (newState, line) = le.Edit "shell> " "" editorState
+                let (newState, line) = editLine "shell> " "" editorState
                 editorState <- newState
                 s <- line
 

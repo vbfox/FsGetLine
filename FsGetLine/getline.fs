@@ -737,142 +737,134 @@ namespace Mono.Terminal
                 |> Render
                 |> ForceCursor st.Cursor
 
-        type LineEditor () =
-
-            [<DefaultValue>]
-            val mutable public xx_sharp_is_annoying : string
-
-            let mutable handlers : Handler array = Array.zeroCreate 0
-
-            do 
-                handlers <-
-                    [|
-                        new Handler (Command.Done, ConsoleKey.Enter,      CmdDone)
-                        new Handler (Command.Home,ConsoleKey.Home,       CmdHome)
-                        new Handler (Command.End,ConsoleKey.End,        CmdEnd)
-                        new Handler (Command.Left,ConsoleKey.LeftArrow,  CmdLeft)
-                        new Handler (Command.Right,ConsoleKey.RightArrow, CmdRight)
-                        new Handler (Command.HistoryPrev,ConsoleKey.UpArrow,    CmdHistoryPrev)
-                        new Handler (Command.HistoryNext,ConsoleKey.DownArrow,  CmdHistoryNext)
-                        new Handler (Command.Backspace,ConsoleKey.Backspace,  CmdBackspace)
-                        new Handler (Command.DeleteChar,ConsoleKey.Delete,     CmdDeleteChar)
-                        new Handler (Command.TabOrComplete,ConsoleKey.Tab,        CmdTabOrComplete)
+        let private handlers =
+            [|
+                new Handler (Command.Done, ConsoleKey.Enter,      CmdDone)
+                new Handler (Command.Home,ConsoleKey.Home,       CmdHome)
+                new Handler (Command.End,ConsoleKey.End,        CmdEnd)
+                new Handler (Command.Left,ConsoleKey.LeftArrow,  CmdLeft)
+                new Handler (Command.Right,ConsoleKey.RightArrow, CmdRight)
+                new Handler (Command.HistoryPrev,ConsoleKey.UpArrow,    CmdHistoryPrev)
+                new Handler (Command.HistoryNext,ConsoleKey.DownArrow,  CmdHistoryNext)
+                new Handler (Command.Backspace,ConsoleKey.Backspace,  CmdBackspace)
+                new Handler (Command.DeleteChar,ConsoleKey.Delete,     CmdDeleteChar)
+                new Handler (Command.TabOrComplete,ConsoleKey.Tab,        CmdTabOrComplete)
                 
-                        // Emacs keys
-                        Handler.Control Command.Home 'A' (CmdHome)
-                        Handler.Control Command.End 'E' (CmdEnd)
-                        Handler.Control Command.Left 'B' (CmdLeft)
-                        Handler.Control Command.Right 'F' (CmdRight)
-                        Handler.Control Command.HistoryPrev 'P' (CmdHistoryPrev)
-                        Handler.Control Command.HistoryNext 'N' (CmdHistoryNext)
-                        Handler.Control Command.CmdKillToEOF 'K' (CmdKillToEOF)
-                        Handler.Control Command.Yank 'Y' (CmdYank)
-                        Handler.Control Command.DeleteChar 'D' (CmdDeleteChar)
-                        Handler.Control Command.Refresh 'L' (CmdRefresh)
-                        Handler.Control Command.ReverseSearch 'R' (CmdReverseSearch)
+                // Emacs keys
+                Handler.Control Command.Home 'A' (CmdHome)
+                Handler.Control Command.End 'E' (CmdEnd)
+                Handler.Control Command.Left 'B' (CmdLeft)
+                Handler.Control Command.Right 'F' (CmdRight)
+                Handler.Control Command.HistoryPrev 'P' (CmdHistoryPrev)
+                Handler.Control Command.HistoryNext 'N' (CmdHistoryNext)
+                Handler.Control Command.CmdKillToEOF 'K' (CmdKillToEOF)
+                Handler.Control Command.Yank 'Y' (CmdYank)
+                Handler.Control Command.DeleteChar 'D' (CmdDeleteChar)
+                Handler.Control Command.Refresh 'L' (CmdRefresh)
+                Handler.Control Command.ReverseSearch 'R' (CmdReverseSearch)
                         
-                        Handler.Alt Command.BackwardWord 'B' ConsoleKey.B (CmdBackwardWord)
-                        Handler.Alt Command.ForwardWord 'F' ConsoleKey.F (CmdForwardWord)
+                Handler.Alt Command.BackwardWord 'B' ConsoleKey.B (CmdBackwardWord)
+                Handler.Alt Command.ForwardWord 'F' ConsoleKey.F (CmdForwardWord)
                 
-                        Handler.Alt Command.DeleteWord 'D' ConsoleKey.D (CmdDeleteWord)
-                        Handler.Alt Command.DeleteBackword ((char)8) ConsoleKey.Backspace (CmdDeleteBackword)
+                Handler.Alt Command.DeleteWord 'D' ConsoleKey.D (CmdDeleteWord)
+                Handler.Alt Command.DeleteBackword ((char)8) ConsoleKey.Backspace (CmdDeleteBackword)
                 
-                        // DEBUG
-                        //Handler.Control ('T', CmdDebug),
+                // DEBUG
+                //Handler.Control ('T', CmdDebug),
 
-                        // quote
-                        Handler.Control Command.Quote 'Q' (fun st -> st |> HandleChar ((Console.ReadKey (true)).KeyChar))
-                    |]
+                // quote
+                Handler.Control Command.Quote 'Q' (fun st -> st |> HandleChar ((Console.ReadKey (true)).KeyChar))
+            |]
 
-            let interruptEdit (thread:Thread) (sender:obj) (a:ConsoleCancelEventArgs) =
-                // Do not abort our program:
-                a.Cancel <- true;
+        let private interruptEdit (thread:Thread) (sender:obj) (a:ConsoleCancelEventArgs) =
+            // Do not abort our program:
+            a.Cancel <- true;
 
-                // Interrupt the editor
-                thread.Abort ()
+            // Interrupt the editor
+            thread.Abort ()
 
-            let readKeyWithEscMeaningAlt () =
-                let key = Console.ReadKey (true)
-                if key.Key = ConsoleKey.Escape then
-                    (Console.ReadKey (true), ConsoleModifiers.Alt)
-                else
-                    (key, key.Modifiers)
+        let private readKeyWithEscMeaningAlt () =
+            let key = Console.ReadKey (true)
+            if key.Key = ConsoleKey.Escape then
+                (Console.ReadKey (true), ConsoleModifiers.Alt)
+            else
+                (key, key.Modifiers)
 
-            let tryFindHandler (input:ConsoleKeyInfo) modifier =
-                handlers |> Array.tryFind (fun handler ->
-                        let handlerKeyInfo = handler.KeyInfo;
+        let private tryFindHandler (input:ConsoleKeyInfo) modifier =
+            handlers |> Array.tryFind (fun handler ->
+                    let handlerKeyInfo = handler.KeyInfo;
 
-                        (handlerKeyInfo.Key = input.Key && handlerKeyInfo.Modifiers = modifier)
-                            || (handlerKeyInfo.KeyChar = input.KeyChar && handlerKeyInfo.Key = ConsoleKey.Zoom)
-                    )
+                    (handlerKeyInfo.Key = input.Key && handlerKeyInfo.Modifiers = modifier)
+                        || (handlerKeyInfo.KeyChar = input.KeyChar && handlerKeyInfo.Key = ConsoleKey.Zoom)
+                )
 
-            let readOneInput st =
-                let (newInput, modifier) = readKeyWithEscMeaningAlt ()
+        let private readOneInput st =
+            let (newInput, modifier) = readKeyWithEscMeaningAlt ()
                
-                let inputHander = tryFindHandler newInput modifier
+            let inputHander = tryFindHandler newInput modifier
 
-                match inputHander with
-                | Some(handler) -> 
-                    let st = handler.KeyHandler st
-                    let st = { st with LastCommand = Some(handler.HandledCommand) }
-                    match (st.SearchState, handler.HandledCommand) with
-                    | ( _, Command.ReverseSearch) -> st
-                    | (Some(search), _) -> { st with PreviousSearch = Some(search.Term); SearchState = None} |> SetPrompt st.SpecifiedPrompt
-                    | _ -> st
-                | None -> st |> HandleChar (newInput.KeyChar)
+            match inputHander with
+            | Some(handler) -> 
+                let st = handler.KeyHandler st
+                let st = { st with LastCommand = Some(handler.HandledCommand) }
+                match (st.SearchState, handler.HandledCommand) with
+                | ( _, Command.ReverseSearch) -> st
+                | (Some(search), _) -> { st with PreviousSearch = Some(search.Term); SearchState = None} |> SetPrompt st.SpecifiedPrompt
+                | _ -> st
+            | None -> st |> HandleChar (newInput.KeyChar)
 
-            let rec readInputUntilDoneEditing = function
-                | st when st.DoneEditing -> st
-                | st -> st |> readOneInput |> readInputUntilDoneEditing
+        let rec private readInputUntilDoneEditing = function
+            | st when st.DoneEditing -> st
+            | st -> st |> readOneInput |> readInputUntilDoneEditing
        
-            let updateGlobalState globalState st =
-                { globalState with LineEditorGlobalState.History = st.History; KillBuffer = st.KillBuffer }
+        let private updateGlobalState globalState st =
+            { globalState with LineEditorGlobalState.History = st.History; KillBuffer = st.KillBuffer }
 
-            member public x.Edit prompt initial globalState =
-                let mutable st = makeDefaultLineEditorState globalState
-                st <-
-                    {
-                        st with
-                            EditThread = Thread.CurrentThread
-                            SearchState = None
-                            DoneEditing = false
-                            History = st.History |> History.cursorToEnd |> History.append initial
-                            MaxRendered = 0
-                            SpecifiedPrompt = prompt
-                            ShownPrompt = prompt
-                    }
+        let editLine prompt initial globalState =
+            let mutable st = makeDefaultLineEditorState globalState
+            st <-
+                {
+                    st with
+                        EditThread = Thread.CurrentThread
+                        SearchState = None
+                        DoneEditing = false
+                        History = st.History |> History.cursorToEnd |> History.append initial
+                        MaxRendered = 0
+                        SpecifiedPrompt = prompt
+                        ShownPrompt = prompt
+                }
 
-                let cancelHandler = new ConsoleCancelEventHandler(interruptEdit Thread.CurrentThread)
-                Console.CancelKeyPress.AddHandler cancelHandler
+            let cancelHandler = new ConsoleCancelEventHandler(interruptEdit Thread.CurrentThread)
+            Console.CancelKeyPress.AddHandler cancelHandler
 
-                st <- st |> InitText (Some(initial))
+            st <- st |> InitText (Some(initial))
 
-                while not st.DoneEditing do
-                    try
-                        st <- readInputUntilDoneEditing st
-                    with
-                    | :? ThreadAbortException ->
-                        Thread.ResetAbort ()
-                        match st.SearchState with
-                        | Some(_) ->
-                            st <- { st with SearchState = None }
-                            Console.WriteLine ()
-                            st <- st |> SetPrompt (prompt)
-                            st <- st |> SetText (Some(""))
-                        | None ->
-                            st <- { st with DoneEditing = true; SignalExit = true}
+            while not st.DoneEditing do
+                try
+                    st <- readInputUntilDoneEditing st
+                with
+                | :? ThreadAbortException ->
+                    Thread.ResetAbort ()
+                    match st.SearchState with
+                    | Some(_) ->
+                        st <- { st with SearchState = None }
+                        Console.WriteLine ()
+                        st <- st |> SetPrompt (prompt)
+                        st <- st |> SetText (Some(""))
+                    | None ->
+                        st <- { st with DoneEditing = true; SignalExit = true}
                 
-                Console.WriteLine ();
+            Console.WriteLine ();
             
-                Console.CancelKeyPress.RemoveHandler cancelHandler
+            Console.CancelKeyPress.RemoveHandler cancelHandler
 
-                if st.SignalExit then
-                    st.History |> History.save
-                    (st |> updateGlobalState globalState, None)
+            if st.SignalExit then
+                st.History |> History.save
+                (st |> updateGlobalState globalState, None)
+            else
+                if st.Text <> "" then
+                    st <- { st with History = History.accept st.Text st.History }
                 else
-                    if st.Text <> "" then
-                        st <- { st with History = History.accept st.Text st.History }
-                    else
-                        st <- { st with History = History.removeLast st.History }
+                    st <- { st with History = History.removeLast st.History }
 
-                    (st |> updateGlobalState globalState, Some(st.Text))
+                (st |> updateGlobalState globalState, Some(st.Text))
