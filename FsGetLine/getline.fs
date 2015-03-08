@@ -225,12 +225,16 @@ namespace Mono.Terminal
 
                 /// The contents of the kill buffer (cut/paste in Emacs parlance)
                 KillBuffer : string
+
+                /// Invoked when the user requests auto-completion using the tab character
+                AutoCompleteEvent : AutoCompleteHandler option
             }
 
         let makeGlobalState (name : string option) (histsize : int) =
             {
                 History = History.empty name histsize
                 KillBuffer = ""
+                AutoCompleteEvent = None
             }
 
         type LineEditor (name : string option, histsize : int) as x =
@@ -276,9 +280,8 @@ namespace Mono.Terminal
             // Used to implement the Kill semantics (multiple Alt-Ds accumulate)
             let mutable last_command : Command = new Command()
 
-            /// Invoked when the user requests auto-completion using the tab character
             [<DefaultValue>]
-            val mutable public AutoCompleteEvent : AutoCompleteHandler option
+            val mutable public xx_sharp_is_annoying : string
 
             let mutable handlers : Handler array = Array.zeroCreate 0
 
@@ -322,7 +325,6 @@ namespace Mono.Terminal
 
                         // quote
                         Handler.Control Command.Quote 'Q' (fun () -> x.HandleChar ((Console.ReadKey (true)).KeyChar))
-                        
                     |]
 
             member private x.CmdDebug () =
@@ -444,7 +446,7 @@ namespace Mono.Terminal
             member private x.CmdTabOrComplete () =
                 let mutable complete = false;
 
-                if x.AutoCompleteEvent.IsSome then
+                if state.AutoCompleteEvent.IsSome then
                     if x.TabAtStartCompletes then
                         complete <- true
                     else 
@@ -454,7 +456,7 @@ namespace Mono.Terminal
                                 complete <- true
 
                     if complete then
-                        let completion = x.AutoCompleteEvent.Value (text.ToString ()) cursor
+                        let completion = state.AutoCompleteEvent.Value (text.ToString ()) cursor
                         let completions = completion.Result
                         if completions.Length <> 0 then
                             let ncompletions = completions.Length
