@@ -18,7 +18,6 @@ namespace Mono.Terminal
                 s <- line
                 
                 match s with
-                | Some(s) -> Console.WriteLine ("----> [{0}]", s);
+                | Some(s) -> printf "%s\r\n\r\n" s
                 | None -> ()
-
             0
