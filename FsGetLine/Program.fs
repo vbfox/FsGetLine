@@ -1,19 +1,14 @@
-﻿// Learn more about F# at http://fsharp.net
-// See the 'F# Tutorial' project for more help.
-
-namespace Mono.Terminal
+﻿namespace BlackFox
 
     module GetLineTestApp =
-
         open System
-        open Mono.Terminal
 
         [<EntryPoint>]
         let main argv = 
-            let mutable editor = GetLine.create (fun s -> { s with AppName = Some("foo") })
+            let mutable editor = FsGetLine.create (fun s -> { s with AppName = Some("foo") })
             let mutable s = Some("")
             while s.IsSome do
-                let (newEditor, line) = editor |> GetLine.get "F#" ""
+                let (newEditor, line) = editor |> FsGetLine.get "F#" ""
                 editor <- newEditor
                 s <- line
                 

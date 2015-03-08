@@ -23,9 +23,9 @@
 //    behind its back (P/Invoke puts for example).
 //    System.Console needs to get the DELETE character, and report accordingly.
 //
-namespace Mono.Terminal
+namespace BlackFox
 
-    module GetLine =
+    module FsGetLine =
         open System
         open System.Text
         open System.IO
