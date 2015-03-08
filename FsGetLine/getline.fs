@@ -263,20 +263,23 @@ namespace Mono.Terminal
                 /// The prompt shown to the user.
                 ShownPrompt : string
 
-                // The current cursor position, indexes into "text", for an index
-                // into st.RenderedText, use TextToRenderPos
+                /// The current cursor position, indexes into "text", for an index
+                /// into st.RenderedText, use TextToRenderPos
                 Cursor : int
 
-                // The row where we started displaying data.
+                /// The row where we started displaying data.
                 HomeRow : int
 
-                // The maximum length that has been displayed on the screen
+                /// The maximum length that has been displayed on the screen
                 MaxRendered : int
 
-                // If we are done editing, this breaks the interactive loop
+                /// If we are done editing, this breaks the interactive loop
                 DoneEditing : bool
 
-                // The thread where the Editing started taking place
+                /// Signal to the caller that the user cancelled either via Ctrl+C or by using Ctrl+D on an empty buffer
+                SignalExit : bool
+
+                /// The thread where the Editing started taking place
                 EditThread : Thread
 
                 /// Our object that tracks history
@@ -291,7 +294,7 @@ namespace Mono.Terminal
                 SearchState : SearchState option
                 PreviousSearch : string option
         
-                // Used to implement the Kill semantics (multiple Alt-Ds accumulate)
+                /// Used to implement the Kill semantics (multiple Alt-Ds accumulate)
                 LastCommand : Command option
             }
 
@@ -305,6 +308,7 @@ namespace Mono.Terminal
                 HomeRow = 0
                 MaxRendered = 0
                 DoneEditing = false
+                SignalExit = false
                 EditThread = null
                 History = History.empty name histsize
                 KillBuffer = ""
@@ -564,7 +568,7 @@ namespace Mono.Terminal
             member private x.CmdDeleteChar () =
                 // If there is no input, this behaves like EOF
                 if st.Text.Length = 0 then
-                    st <- { st with DoneEditing = true; Text = null }
+                    st <- { st with DoneEditing = true; SignalExit = true }
                     Console.WriteLine ()
                 else if (st.Cursor <> st.Text.Length) then
                     let newText = st.Text.Remove (st.Cursor, 1)
@@ -808,7 +812,7 @@ namespace Mono.Terminal
                         x.HandleChar (newInput.KeyChar)
                  
             member private x.InitText (initial:string option) =
-                let newText = match initial with | Some(initial) -> initial | None -> ""
+                let newText = match initial with | Some(null) | None -> "" | Some(initial) -> initial
                 st <- { st with Cursor = newText.Length; Text = newText; RenderedText = render newText }
                 x.Render ()
                 x.ForceCursor st.Cursor
@@ -846,23 +850,31 @@ namespace Mono.Terminal
                         x.EditLoop ()
                     with
                     | :? ThreadAbortException ->
-                        st <- { st with SearchState = None }
                         Thread.ResetAbort ()
-                        Console.WriteLine ()
-                        x.SetPrompt (prompt)
-                        x.SetText (Some(""))
+                        match st.SearchState with
+                        | Some(_) ->
+                            st <- { st with SearchState = None }
+                            Console.WriteLine ()
+                            x.SetPrompt (prompt)
+                            x.SetText (Some(""))
+                        | None ->
+                            st <- { st with DoneEditing = true; SignalExit = true}
                 
                 Console.WriteLine ();
             
                 Console.CancelKeyPress.RemoveHandler cancelHandler
 
-                if st.Text <> "" then
-                    st <- { st with History = History.accept st.Text st.History }
+                if st.SignalExit then
+                    st.History |> History.save
+                    None
                 else
-                    st <- { st with History = History.removeLast st.History }
+                    if st.Text <> "" then
+                        st <- { st with History = History.accept st.Text st.History }
+                    else
+                        st <- { st with History = History.removeLast st.History }
 
-                Some(st.Text)
+                    Some(st.Text)
         
-            member public x. SaveHistory () =
+            member public x.SaveHistory () =
                 st.History |> History.save
                 
