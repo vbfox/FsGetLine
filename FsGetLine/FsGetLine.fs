@@ -173,7 +173,7 @@ namespace BlackFox
             let private getFile app = 
                 match app with
                 | Some(app) ->
-                    let dir = Environment.GetFolderPath (Environment.SpecialFolder.Personal)
+                    let dir = Environment.GetFolderPath (Environment.SpecialFolder.ApplicationData)
                     let path = Path.Combine (dir, "." + app + "-history")
                     Some(path)
                 | None ->
