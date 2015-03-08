@@ -49,7 +49,6 @@
   <ItemGroup>
     <None Include="App.config" />
     <Compile Include="getline.fs" />
-    <Compile Include="File1.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <PropertyGroup>
