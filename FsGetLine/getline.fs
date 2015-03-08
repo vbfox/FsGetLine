@@ -237,6 +237,18 @@ namespace Mono.Terminal
                 AutoCompleteEvent = None
             }
 
+        type SearchState =
+            {
+                /// Current search direction
+                Direction: SearchDirection
+
+                // The position where we found the match
+                MatchAt: int
+
+                // The string being searched for
+                Term: string
+            }
+
         type LineEditor (name : string option, histsize : int) as x =
             // The text being edited.
             let mutable text = new StringBuilder ()
@@ -267,15 +279,8 @@ namespace Mono.Terminal
 
             let mutable state = makeGlobalState name histsize
 
-            // The string being searched for
-            let mutable search : string = null
-            let mutable last_search : string = null
-
-            // whether we are searching (-1= reverse; 0 = no; 1 = forward)
-            let mutable searching : SearchDirection option = None
-
-            // The position where we found the match.
-            let mutable match_at : int = 0
+            let mutable searchState : SearchState option = None
+            let mutable previousSearch : string option = None
         
             // Used to implement the Kill semantics (multiple Alt-Ds accumulate)
             let mutable last_command : Command = new Command()
@@ -648,63 +653,65 @@ namespace Mono.Terminal
                 x.SetPrompt ("(reverse-i-search)`" + s + "': ")
 
             member private x.ReverseSearch () =
-                let mutable search_backward = true
+                match searchState with
+                | Some(search) ->
+                    let mutable search_backward = true
 
-                if cursor = text.Length then
-                    // The cursor is at the end of the string
-                    let p = (text.ToString()).LastIndexOf (search)
-                    if p <> -1 then
-                        match_at <- p
-                        cursor <- p
-                        x.ForceCursor (cursor)
-                        search_backward <- false
-                else
-                    // The cursor is somewhere in the middle of the string
-                    let start = if cursor = match_at then cursor - 1 else cursor
-                    if start <> -1 then
-                        let p = (text.ToString()).LastIndexOf (search, start)
+                    if cursor = text.Length then
+                        // The cursor is at the end of the string
+                        let p = (text.ToString()).LastIndexOf (search.Term)
                         if p <> -1 then
-                            match_at <- p
+                            searchState <- Some({ search with MatchAt = p })
                             cursor <- p
                             x.ForceCursor (cursor)
                             search_backward <- false
+                    else
+                        // The cursor is somewhere in the middle of the string
+                        let start = if cursor = search.MatchAt then cursor - 1 else cursor
+                        if start <> -1 then
+                            let p = (text.ToString()).LastIndexOf (search.Term, start)
+                            if p <> -1 then
+                                searchState <- Some({ search with MatchAt = p })
+                                cursor <- p
+                                x.ForceCursor (cursor)
+                                search_backward <- false
 
-                if search_backward then
-                    // Need to search backwards in history
-                    x.HistoryUpdateLine ()
-                    let (newHistory, searchResult) = History.searchBackward search state.History
-                    state <- { state with History = newHistory }
-                    match searchResult with
-                    | Some(_) ->
-                        match_at <- -1
-                        x.SetText searchResult
-                        x.ReverseSearch ()
-                    | None -> ()
-
-
-        
-            member private x.CmdReverseSearch () =
-                match searching with
+                    if search_backward then
+                        // Need to search backwards in history
+                        x.HistoryUpdateLine ()
+                        let (newHistory, searchResult) = History.searchBackward search.Term state.History
+                        state <- { state with History = newHistory }
+                        match searchResult with
+                        | Some(_) ->
+                            searchState <- Some({ search with MatchAt = -1 })
+                            x.SetText searchResult
+                            x.ReverseSearch ()
+                        | None -> ()
                 | None ->
-                    match_at <- -1
-                    last_search <- search
-                    searching <- Some(SearchDirection.Backward)
-                    search <- ""
-                    x.SetSearchPrompt ("")
-                | Some(_) ->
-                    if search = "" then
-                        if last_search <> "" && last_search <> null then
-                            search <- last_search
-                            x.SetSearchPrompt (search)
+                    failwith "No search in progress"
 
+            member private x.CmdReverseSearch () =
+                match searchState with
+                | None ->
+                    searchState <- Some { MatchAt = -1; Term = ""; Direction = SearchDirection.Backward}
+                    x.SetSearchPrompt ("")
+                | Some(search) ->
+                    if search.Term = "" then
+                        match previousSearch with
+                        | None | Some("") ->
+                            ()
+                        | Some(previousTerm) -> 
+                            searchState <- Some { search with Term = previousTerm}
+                            x.SetSearchPrompt previousTerm
                             x.ReverseSearch ()
                     else
                         x.ReverseSearch ()
 
 
-            member private x.SearchAppend (c:char) =
-                search <- search + (string)c
-                x.SetSearchPrompt (search)
+            member private x.SearchAppend (c:char) search =
+                let newTerm = search.Term + (string)c
+                searchState <- Some { search with Term = newTerm }
+                x.SetSearchPrompt newTerm
 
                 //
                 // If the new typed data still matches the current text, stay here
@@ -712,10 +719,10 @@ namespace Mono.Terminal
                 let mutable still_matches = false
                 if cursor < text.Length then
                     let r = text.ToString (cursor, text.Length - cursor)
-                    if r.StartsWith (search) then still_matches <- true
+                    if r.StartsWith newTerm then still_matches <- true
                 
                 if not still_matches then
-                    x.ReverseSearch ();
+                    x.ReverseSearch ()
        
             member private x.CmdRefresh () =
                 Console.Clear ();
@@ -731,8 +738,8 @@ namespace Mono.Terminal
                 edit_thread.Abort();
 
             member private x.HandleChar c =
-                match searching with
-                | Some(_) -> x.SearchAppend (c)
+                match searchState with
+                | Some(search) -> x.SearchAppend c search
                 | None -> x.InsertChar (c)
 
             let readKeyWithEscMeaningAlt () =
@@ -765,10 +772,11 @@ namespace Mono.Terminal
                         handler_index <- handler_index + 1
 
                     if handled then
-                        match (searching, last_command) with
+                        match (searchState, last_command) with
                         | ( _, Command.ReverseSearch) -> ()
-                        | (Some(_), _) -> 
-                            searching <- None
+                        | (Some(search), _) -> 
+                            previousSearch <- Some(search.Term)
+                            searchState <- None
                             x.SetPrompt (specified_prompt)
                         | _ -> ()
                    
@@ -793,8 +801,8 @@ namespace Mono.Terminal
                 x.ForceCursor (cursor)
        
             member public x.Edit prompt initial =
-                edit_thread <- Thread.CurrentThread;
-                searching <- None;
+                edit_thread <- Thread.CurrentThread
+                searchState <- None
                 let cancelHandler = new ConsoleCancelEventHandler(x.InterruptEdit)
                 Console.CancelKeyPress.AddHandler cancelHandler
             
@@ -811,7 +819,7 @@ namespace Mono.Terminal
                         x.EditLoop ()
                     with
                     | :? ThreadAbortException ->
-                        searching <- None
+                        searchState <- None
                         Thread.ResetAbort ()
                         Console.WriteLine ()
                         x.SetPrompt (prompt)
