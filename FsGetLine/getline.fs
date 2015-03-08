@@ -61,9 +61,9 @@ namespace Mono.Terminal
             | Forward = 1
             | Backward = 2
 
-        type Handler(cmd : Command, cki : ConsoleKeyInfo, h : unit -> unit) =
+        type Handler(cmd : Command, keyInfo : ConsoleKeyInfo, h : unit -> unit) =
             member val HandledCommand = cmd
-            member val CKI = cki
+            member val KeyInfo = keyInfo
             member val KeyHandler = h
 
             new(cmd : Command, key, h : unit -> unit) = Handler(cmd, new ConsoleKeyInfo((char) 0, key, false, false, false), h)
@@ -696,32 +696,29 @@ namespace Mono.Terminal
                 | Some(_) -> x.SearchAppend (c)
                 | None -> x.InsertChar (c)
 
+            let readKeyWithEscMeaningAlt () =
+                let key = Console.ReadKey (true)
+                if key.Key = ConsoleKey.Escape then
+                    (Console.ReadKey (true), ConsoleModifiers.Alt)
+                else
+                    (key, key.Modifiers)
+
             member private x.EditLoop () =
-                let mutable cki : ConsoleKeyInfo = new ConsoleKeyInfo()
-
                 while not done_editing do
-                    let mutable modifier : ConsoleModifiers = new ConsoleModifiers()
-                
-                    cki <- Console.ReadKey (true)
-                    if cki.Key = ConsoleKey.Escape then
-                        cki <- Console.ReadKey (true);
-
-                        modifier <- ConsoleModifiers.Alt
-                    else
-                        modifier <- cki.Modifiers
-                
+                    let (newInput, modifier) = readKeyWithEscMeaningAlt ()
+               
                     let mutable handled = false;
                     
                     let mutable handler_index = 0
                     while handler_index < handlers.Length && not handled do
                         let handler = handlers.[handler_index]
-                        let t = handler.CKI;
+                        let handlerKeyInfo = handler.KeyInfo;
 
-                        if t.Key = cki.Key && t.Modifiers = modifier then
+                        if handlerKeyInfo.Key = newInput.Key && handlerKeyInfo.Modifiers = modifier then
                             handled <- true
                             handler.KeyHandler ()
                             last_command <- handler.HandledCommand
-                        else if t.KeyChar = cki.KeyChar && t.Key = ConsoleKey.Zoom then
+                        else if handlerKeyInfo.KeyChar = newInput.KeyChar && handlerKeyInfo.Key = ConsoleKey.Zoom then
                             handled <- true
                             handler.KeyHandler ()
                             last_command <- handler.HandledCommand
@@ -736,8 +733,8 @@ namespace Mono.Terminal
                             x.SetPrompt (specified_prompt)
                         | _ -> ()
                    
-                    else if (cki.KeyChar <> (char) 0) then
-                        x.HandleChar (cki.KeyChar)
+                    else if (newInput.KeyChar <> (char) 0) then
+                        x.HandleChar (newInput.KeyChar)
                  
             member private x.InitText (initial:string) =
                 text <- new StringBuilder (initial)
