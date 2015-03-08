@@ -33,7 +33,8 @@ namespace Mono.Terminal
         open System.Reflection
 
         type Completion = { Result : string list; Prefix : string }
-        type AutoCompleteHandler = delegate of string * int -> Completion
+        type AutoCompleteHandler = string -> int -> Completion
+        type KeyHandler = unit -> unit
 
         type Command =
             | Done = 1
@@ -60,13 +61,13 @@ namespace Mono.Terminal
             | Forward = 1
             | Backward = 2
 
-        type Handler(cmd : Command, keyInfo : ConsoleKeyInfo, h : unit -> unit) =
+        type Handler(cmd : Command, keyInfo : ConsoleKeyInfo, h : KeyHandler) =
             member val HandledCommand = cmd
             member val KeyInfo = keyInfo
             member val KeyHandler = h
 
-            new(cmd : Command, key, h : unit -> unit) = Handler(cmd, new ConsoleKeyInfo((char) 0, key, false, false, false), h)
-            new(cmd : Command, c, h : unit -> unit) = Handler(cmd, new ConsoleKeyInfo (c, ConsoleKey.Zoom, false, false, false), h)
+            new(cmd : Command, key, h : KeyHandler) = Handler(cmd, new ConsoleKeyInfo((char) 0, key, false, false, false), h)
+            new(cmd : Command, c, h : KeyHandler) = Handler(cmd, new ConsoleKeyInfo (c, ConsoleKey.Zoom, false, false, false), h)
             
             static member Alt cmd c k h = Handler (cmd, new ConsoleKeyInfo (c, k, false, true, false), h)
             static member Control cmd (c : char) h = Handler (cmd, (char) ((int)c - (int)'A' + 1), h)
@@ -277,7 +278,7 @@ namespace Mono.Terminal
 
             /// Invoked when the user requests auto-completion using the tab character
             [<DefaultValue>]
-            val mutable public AutoCompleteEvent : AutoCompleteHandler
+            val mutable public AutoCompleteEvent : AutoCompleteHandler option
 
             let mutable handlers : Handler array = Array.zeroCreate 0
 
@@ -443,7 +444,7 @@ namespace Mono.Terminal
             member private x.CmdTabOrComplete () =
                 let mutable complete = false;
 
-                if x.AutoCompleteEvent <> null then
+                if x.AutoCompleteEvent.IsSome then
                     if x.TabAtStartCompletes then
                         complete <- true
                     else 
@@ -453,7 +454,7 @@ namespace Mono.Terminal
                                 complete <- true
 
                     if complete then
-                        let completion = x.AutoCompleteEvent.Invoke (text.ToString (), cursor)
+                        let completion = x.AutoCompleteEvent.Value (text.ToString ()) cursor
                         let completions = completion.Result
                         if completions.Length <> 0 then
                             let ncompletions = completions.Length
