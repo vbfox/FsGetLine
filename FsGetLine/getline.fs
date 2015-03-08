@@ -217,6 +217,21 @@ namespace Mono.Terminal
                         sw.WriteLine history.Lines.[p]
                 | None -> ()
 
+        type LineEditorGlobalState =
+            {
+                /// Our object that tracks history
+                History : History.History
+
+                /// The contents of the kill buffer (cut/paste in Emacs parlance)
+                KillBuffer : string
+            }
+
+        let makeGlobalState (name : string option) (histsize : int) =
+            {
+                History = History.empty name histsize
+                KillBuffer = ""
+            }
+
         type LineEditor (name : string option, histsize : int) as x =
             // The text being edited.
             let mutable text = new StringBuilder ()
@@ -245,11 +260,7 @@ namespace Mono.Terminal
             // The thread where the Editing started taking place
             let mutable edit_thread : Thread = null
 
-            // Our object that tracks history
-            let mutable history = History.empty name histsize
-
-            // The contents of the kill buffer (cut/paste in Emacs parlance)
-            let mutable kill_buffer = "";
+            let mutable state = makeGlobalState name histsize
 
             // The string being searched for
             let mutable search : string = null
@@ -314,7 +325,7 @@ namespace Mono.Terminal
                     |]
 
             member private x.CmdDebug () =
-                history |> History.dump
+                state.History |> History.dump
                 Console.WriteLine ()
                 x.Render ()
 
@@ -562,9 +573,9 @@ namespace Mono.Terminal
                     let k = text.ToString (cursor, pos-cursor)
             
                     if last_command = Command.DeleteWord then
-                        kill_buffer <- kill_buffer + k;
+                        state <- { state with KillBuffer = state.KillBuffer + k }
                     else
-                        kill_buffer <- k;
+                        state <- { state with KillBuffer = k }
             
                     text.Remove (cursor, pos-cursor) |> ignore
                     x.ComputeRendered ()
@@ -576,9 +587,9 @@ namespace Mono.Terminal
                     let k = text.ToString (pos, cursor-pos)
             
                     if last_command = Command.DeleteBackword then
-                        kill_buffer <- k + kill_buffer;
+                        state <- { state with KillBuffer = state.KillBuffer + k }
                     else
-                        kill_buffer <- k;
+                        state <- { state with KillBuffer = k }
             
                     text.Remove (pos, cursor-pos) |> ignore
                     x.ComputeRendered ()
@@ -588,29 +599,29 @@ namespace Mono.Terminal
             // Adds the current line to the history if needed
             //
             member private x.HistoryUpdateLine () =
-                history <- history |> History.update (text.ToString ())
+                state <- { state with History = state.History |> History.update (text.ToString ()) }
         
             member private x.CmdHistoryPrev () =
-                if History.previousAvailable history then
+                if History.previousAvailable state.History then
                     x.HistoryUpdateLine ()
-                    let (newHistory, text) = History.previous history
-                    history <- newHistory
+                    let (newHistory, text) = History.previous state.History
+                    state <- { state with History = newHistory }
                     x.SetText (text)
 
             member private x.CmdHistoryNext () =
-                if History.nextAvailable history then
-                    let (newHistory, text) = history |> History.update (text.ToString()) |> History.next 
-                    history <- newHistory
+                if History.nextAvailable state.History then
+                    let (newHistory, text) = state.History |> History.update (text.ToString()) |> History.next 
+                    state <- { state with History = newHistory }
                     x.SetText (text)
 
             member private x.CmdKillToEOF () =
-                kill_buffer <- text.ToString (cursor, text.Length-cursor);
+                state <- { state with KillBuffer = text.ToString (cursor, text.Length-cursor) }
                 text.Length <- cursor;
                 x.ComputeRendered ();
                 x.RenderAfter (cursor);
 
             member private x.CmdYank () =
-                x.InsertTextAtCursor (kill_buffer)
+                x.InsertTextAtCursor (state.KillBuffer)
 
 
             member private x.InsertTextAtCursor str =
@@ -658,8 +669,8 @@ namespace Mono.Terminal
                 if search_backward then
                     // Need to search backwards in history
                     x.HistoryUpdateLine ()
-                    let (newHistory, searchResult) = History.searchBackward search history
-                    history <- newHistory
+                    let (newHistory, searchResult) = History.searchBackward search state.History
+                    state <- { state with History = newHistory }
                     match searchResult with
                     | Some(_) ->
                         match_at <- -1
@@ -785,7 +796,7 @@ namespace Mono.Terminal
                 Console.CancelKeyPress.AddHandler cancelHandler
             
                 done_editing <- false
-                history <- history |> History.cursorToEnd |> History.append initial
+                state <- { state with History = state.History |> History.cursorToEnd |> History.append initial }
                 max_rendered <- 0
             
                 specified_prompt <- prompt
@@ -808,17 +819,17 @@ namespace Mono.Terminal
                 Console.CancelKeyPress.RemoveHandler cancelHandler
 
                 if text = null then
-                    history |> History.save
+                    state.History |> History.save
                     None
                 else
                     let result = text.ToString ()
                     if result <> "" then
-                        history <- History.accept result history
+                        state <- { state with History = History.accept result state.History }
                     else
-                        history <- History.removeLast history
+                        state <- { state with History = History.removeLast state.History }
 
                     Some(result)
         
             member public x. SaveHistory () =
-                history |> History.save
+                state.History |> History.save
                 
