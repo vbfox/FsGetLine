@@ -242,48 +242,81 @@ namespace Mono.Terminal
                 /// Current search direction
                 Direction: SearchDirection
 
-                // The position where we found the match
+                /// The position where we found the match
                 MatchAt: int
 
-                // The string being searched for
+                /// The string being searched for
                 Term: string
             }
 
+        type LineEditorState =
+            {
+                /// The text being edited.
+                Text : string
+
+                /// The text as it is rendered (replaces (char)1 with ^A on display for example).
+                RenderedText : string
+
+                /// The prompt specified
+                SpecifiedPrompt : string
+
+                /// The prompt shown to the user.
+                ShownPrompt : string
+
+                // The current cursor position, indexes into "text", for an index
+                // into st.RenderedText, use TextToRenderPos
+                Cursor : int
+
+                // The row where we started displaying data.
+                HomeRow : int
+
+                // The maximum length that has been displayed on the screen
+                MaxRendered : int
+
+                // If we are done editing, this breaks the interactive loop
+                DoneEditing : bool
+
+                // The thread where the Editing started taking place
+                EditThread : Thread
+
+                /// Our object that tracks history
+                History : History.History
+
+                /// The contents of the kill buffer (cut/paste in Emacs parlance)
+                KillBuffer : string
+
+                /// Invoked when the user requests auto-completion using the tab character
+                AutoCompleteEvent : AutoCompleteHandler option
+
+                SearchState : SearchState option
+                PreviousSearch : string option
+        
+                // Used to implement the Kill semantics (multiple Alt-Ds accumulate)
+                LastCommand : Command
+            }
+
+        let makeDefaultLineEditorState (name : string option) (histsize : int) =
+            {
+                Text = ""
+                RenderedText = ""
+                SpecifiedPrompt = ""
+                ShownPrompt = ""
+                Cursor = 0
+                HomeRow = 0
+                MaxRendered = 0
+                DoneEditing = false
+                EditThread = null
+                History = History.empty name histsize
+                KillBuffer = ""
+                AutoCompleteEvent = None
+                SearchState = None
+                PreviousSearch = None
+                LastCommand = new Command()
+            }
+
         type LineEditor (name : string option, histsize : int) as x =
-            // The text being edited.
-            let mutable text = new StringBuilder ()
 
-            // The text as it is rendered (replaces (char)1 with ^A on display for example).
-            let rendered_text = new StringBuilder ()
-
-            // The prompt specified, and the prompt shown to the user.
-            let mutable specified_prompt : string = null
-
-            let mutable shown_prompt : string = null
-        
-            // The current cursor position, indexes into "text", for an index
-            // into rendered_text, use TextToRenderPos
-            let mutable cursor : int = 0
-
-            // The row where we started displaying data.
-            let mutable home_row : int = 0
-
-            // The maximum length that has been displayed on the screen
-            let mutable max_rendered: int = 0
-
-            // If we are done editing, this breaks the interactive loop
-            let mutable done_editing = false
-
-            // The thread where the Editing started taking place
-            let mutable edit_thread : Thread = null
-
-            let mutable state = makeGlobalState name histsize
-
-            let mutable searchState : SearchState option = None
-            let mutable previousSearch : string option = None
-        
-            // Used to implement the Kill semantics (multiple Alt-Ds accumulate)
-            let mutable last_command : Command = new Command()
+            let mutable st = makeDefaultLineEditorState name histsize
 
             [<DefaultValue>]
             val mutable public xx_sharp_is_annoying : string
@@ -333,72 +366,69 @@ namespace Mono.Terminal
                     |]
 
             member private x.CmdDebug () =
-                state.History |> History.dump
+                st.History |> History.dump
                 Console.WriteLine ()
                 x.Render ()
 
             member private x.Render () =
-                Console.Write (shown_prompt);
-                Console.Write (rendered_text);
+                Console.Write st.ShownPrompt
+                Console.Write st.RenderedText
 
-                let max = System.Math.Max (rendered_text.Length + shown_prompt.Length, max_rendered);
+                let max = System.Math.Max (st.RenderedText.Length + st.ShownPrompt.Length, st.MaxRendered);
             
-                for i = rendered_text.Length + shown_prompt.Length to max_rendered - 1 do
+                for i = st.RenderedText.Length + st.ShownPrompt.Length to st.MaxRendered - 1 do
                     Console.Write (' ');
-                max_rendered <- shown_prompt.Length + rendered_text.Length
+                st <- { st with MaxRendered = st.ShownPrompt.Length + st.RenderedText.Length }
 
                 // Write one more to ensure that we always wrap around properly if we are at the
                 // end of a line.
-                Console.Write (' ')
+                Console.Write ' '
 
                 x.UpdateHomeRow (max)
 
             member private x.UpdateHomeRow screenpos = 
                 let lines = 1 + (screenpos / Console.WindowWidth);
 
-                home_row <- Console.CursorTop - (lines - 1);
-                if home_row < 0 then
-                    home_row <- 0
-        
+                st <- { st with HomeRow = System.Math.Max (0, Console.CursorTop - (lines - 1)) }       
 
             member private x.RenderFrom pos =
                 let rpos = x.TextToRenderPos (pos)
                 let mutable i = rpos;
             
-                while i < rendered_text.Length do
-                    Console.Write (rendered_text.[i])
+                while i < st.RenderedText.Length do
+                    Console.Write (st.RenderedText.[i])
                     i <- i + 1
 
-                if (shown_prompt.Length + rendered_text.Length) > max_rendered then
-                    max_rendered <- shown_prompt.Length + rendered_text.Length
+                if (st.ShownPrompt.Length + st.RenderedText.Length) > st.MaxRendered then
+                    st <- { st with MaxRendered = st.ShownPrompt.Length + st.RenderedText.Length }
                 else
-                    let max_extra = max_rendered - shown_prompt.Length
+                    let max_extra = st.MaxRendered - st.ShownPrompt.Length
                     while i < max_extra do
                         Console.Write (' ')
                         i <- i + 1
-                
 
-            member private x.ComputeRendered () = 
-                rendered_text.Length <- 0;
+            let render (text:string) =                 
+                let renderedText = new StringBuilder()
 
                 for i = 0 to text.Length - 1 do
                     let c = (int) text.[i];
                     if c < 26 then
                         if c = (int)'\t' then
-                            rendered_text.Append ("    ") |> ignore
+                            renderedText.Append ("    ") |> ignore
                         else
-                            rendered_text.Append ('^') |> ignore
-                            rendered_text.Append ((char) (c + (int) 'A' - 1)) |> ignore
+                            renderedText.Append ('^') |> ignore
+                            renderedText.Append ((char) (c + (int) 'A' - 1)) |> ignore
                         
                     else
-                        rendered_text.Append ((char)c) |> ignore
+                       renderedText.Append ((char)c) |> ignore
 
+                renderedText.ToString()
 
             member private x.TextToRenderPos pos =
                 let mutable p = 0;
 
                 for i = 0 to pos - 1 do
-                    let c = (int) text.[i];
+                    let c = (int) st.Text.[i];
                 
                     if c < 26 then
                         if c = 9 then
@@ -410,58 +440,59 @@ namespace Mono.Terminal
 
                 p
             
-            member private x.TextToScreenPos pos = shown_prompt.Length + x.TextToRenderPos (pos)
+            member private x.TextToScreenPos pos = st.ShownPrompt.Length + x.TextToRenderPos (pos)
 
-            member private x.LineCount with get () = (shown_prompt.Length + rendered_text.Length)/Console.WindowWidth
+            member private x.LineCount with get () = (st.ShownPrompt.Length + st.RenderedText.Length)/Console.WindowWidth
 
             member private x.ForceCursor newpos = 
-                cursor <- newpos;
+                st <- { st with Cursor = newpos }
 
-                let actual_pos = shown_prompt.Length + x.TextToRenderPos (cursor)
-                let row = home_row + (actual_pos/Console.WindowWidth)
+                let actual_pos = st.ShownPrompt.Length + x.TextToRenderPos (st.Cursor)
+                let row = st.HomeRow + (actual_pos/Console.WindowWidth)
                 let row = if row < Console.BufferHeight then row else Console.BufferHeight-1
                 let col = actual_pos % Console.WindowWidth
 
                 Console.SetCursorPosition (col, row);
 
             member private x.UpdateCursor newpos =
-                if cursor <> newpos then
+                if st.Cursor <> newpos then
                     x.ForceCursor newpos
 
             member private x.InsertChar (c:char) =
                 let prev_lines = x.LineCount
-                text.Insert (cursor, c) |> ignore
-                x.ComputeRendered ()
+                let newText = st.Text.Insert (st.Cursor, (string)c)
+                st <- { st with Text = newText; RenderedText = render newText }
+                
                 if prev_lines <> x.LineCount then
-                    Console.SetCursorPosition (0, home_row)
+                    Console.SetCursorPosition (0, st.HomeRow)
                     x.Render ()
-                    cursor <- cursor + 1
-                    x.ForceCursor cursor
+                    st <- { st with Cursor = st.Cursor + 1 }
+                    x.ForceCursor st.Cursor
                 else 
-                    x.RenderFrom (cursor);
-                    cursor <- cursor + 1
-                    x.ForceCursor cursor
-                    x.UpdateHomeRow (x.TextToScreenPos (cursor));
+                    x.RenderFrom st.Cursor
+                    st <- { st with Cursor = st.Cursor + 1 }
+                    x.ForceCursor st.Cursor
+                    x.UpdateHomeRow (x.TextToScreenPos (st.Cursor));
 
             member private x.CmdDone () =
-                done_editing <- true
+                st <- { st with DoneEditing = true}
             
             member val TabAtStartCompletes : bool = false
 
             member private x.CmdTabOrComplete () =
                 let mutable complete = false;
 
-                if state.AutoCompleteEvent.IsSome then
+                if st.AutoCompleteEvent.IsSome then
                     if x.TabAtStartCompletes then
                         complete <- true
                     else 
                         let mutable i = 0
-                        while i < cursor && not complete do
-                            if not (Char.IsWhiteSpace (text.[i])) then
+                        while i < st.Cursor && not complete do
+                            if not (Char.IsWhiteSpace (st.Text.[i])) then
                                 complete <- true
 
                     if complete then
-                        let completion = state.AutoCompleteEvent.Value (text.ToString ()) cursor
+                        let completion = st.AutoCompleteEvent.Value st.Text st.Cursor
                         let completions = completion.Result
                         if completions.Length <> 0 then
                             let ncompletions = completions.Length
@@ -494,7 +525,7 @@ namespace Mono.Terminal
                                 
                                 Console.WriteLine ()
                                 x.Render ()
-                                x.ForceCursor (cursor)
+                                x.ForceCursor st.Cursor
                             
                     else
                         x.HandleChar ('\t')
@@ -503,45 +534,46 @@ namespace Mono.Terminal
             
         
             member private x.CmdHome () = x.UpdateCursor (0)
-            member private x.CmdEnd () = x.UpdateCursor (text.Length)
-            member private x.CmdLeft () = if cursor <> 0 then x.UpdateCursor (cursor-1)
+            member private x.CmdEnd () = x.UpdateCursor (st.Text.Length)
+            member private x.CmdLeft () = if st.Cursor <> 0 then x.UpdateCursor (st.Cursor-1)
 
             member private x.CmdBackwardWord () =
-                let p = x.WordBackward (cursor)
+                let p = x.WordBackward st.Cursor
                 if p <> -1 then x.UpdateCursor (p)
 
             member private x.CmdForwardWord () =
-                let p = x.WordForward (cursor)
+                let p = x.WordForward st.Cursor
                 if p <> -1 then x.UpdateCursor (p);
 
             member private x.CmdRight () =
-                if (cursor <> text.Length) then x.UpdateCursor (cursor+1);
+                if (st.Cursor <> st.Text.Length) then x.UpdateCursor (st.Cursor+1);
 
 
             member private x.RenderAfter p =
-                x.ForceCursor (p)
-                x.RenderFrom (p)
-                x.ForceCursor (cursor)
+                x.ForceCursor p
+                x.RenderFrom p
+                x.ForceCursor st.Cursor
         
             member private x.CmdBackspace () =
-                if (cursor <> 0) then
-                    cursor <- cursor - 1
-                    text.Remove (cursor, 1) |> ignore
-                    x.ComputeRendered ()
-                    x.RenderAfter (cursor)
+                if st.Cursor <> 0 then
+                    let newCursor = st.Cursor - 1
+                    let newText = st.Text.Remove (st.Cursor, 1)
+                    st <- { st with Cursor = newCursor; Text = newText; RenderedText = render newText}
+                    x.RenderAfter st.Cursor
 
             member private x.CmdDeleteChar () =
                 // If there is no input, this behaves like EOF
-                if text.Length = 0 then
-                    done_editing <- true
-                    text <- null
+                if st.Text.Length = 0 then
+                    st <- { st with DoneEditing = true; Text = null }
                     Console.WriteLine ()
-                else if (cursor <> text.Length) then
-                    text.Remove (cursor, 1) |> ignore
-                    x.ComputeRendered ()
-                    x.RenderAfter (cursor)
+                else if (st.Cursor <> st.Text.Length) then
+                    let newText = st.Text.Remove (st.Cursor, 1)
+                    st <- { st with Text = newText; RenderedText = render newText }
+                    x.RenderAfter st.Cursor
 
             member private x.WordForward p =
+                let text = st.Text
+
                 if (p >= text.Length) then
                     -1
                 else
@@ -556,6 +588,8 @@ namespace Mono.Terminal
             
 
             member private x.WordBackward p =
+                let text = st.Text
+
                 if p = 0 then
                     -1
                 else if p = 1 then
@@ -575,105 +609,99 @@ namespace Mono.Terminal
             
        
             member private x.CmdDeleteWord () =
-                let pos = x.WordForward (cursor)
+                let pos = x.WordForward st.Cursor
 
                 if pos <> -1 then
-                    let k = text.ToString (cursor, pos-cursor)
-            
-                    if last_command = Command.DeleteWord then
-                        state <- { state with KillBuffer = state.KillBuffer + k }
-                    else
-                        state <- { state with KillBuffer = k }
-            
-                    text.Remove (cursor, pos-cursor) |> ignore
-                    x.ComputeRendered ()
-                    x.RenderAfter (cursor)
+                    let k = st.Text.Substring (st.Cursor, pos-st.Cursor)
+           
+                    let newKillBuffer = if st.LastCommand = Command.DeleteWord then st.KillBuffer + k else k
+                    let newText = st.Text.Remove (st.Cursor, pos-st.Cursor)
+                    st <- { st with KillBuffer = newKillBuffer; Text = newText; RenderedText = render newText }
+
+                    x.RenderAfter st.Cursor
         
             member private x.CmdDeleteBackword () =
-                let pos = x.WordBackward (cursor);
+                let pos = x.WordBackward st.Cursor
                 if pos <> -1 then
-                    let k = text.ToString (pos, cursor-pos)
+                    let k = st.Text.Substring (pos, st.Cursor-pos)
             
-                    if last_command = Command.DeleteBackword then
-                        state <- { state with KillBuffer = state.KillBuffer + k }
-                    else
-                        state <- { state with KillBuffer = k }
-            
-                    text.Remove (pos, cursor-pos) |> ignore
-                    x.ComputeRendered ()
+                    let newKillBuffer = if st.LastCommand = Command.DeleteBackword then st.KillBuffer + k else k
+                    let newText = st.Text.Remove (pos, st.Cursor-pos)
+                    st <- { st with KillBuffer = newKillBuffer; Text = newText; RenderedText = render newText }
+
                     x.RenderAfter (pos)
         
             //
             // Adds the current line to the history if needed
             //
             member private x.HistoryUpdateLine () =
-                state <- { state with History = state.History |> History.update (text.ToString ()) }
+                let newHistory = st.History |> History.update st.Text
+                st <- { st with History = newHistory }
         
             member private x.CmdHistoryPrev () =
-                if History.previousAvailable state.History then
+                if History.previousAvailable st.History then
                     x.HistoryUpdateLine ()
-                    let (newHistory, text) = History.previous state.History
-                    state <- { state with History = newHistory }
+                    let (newHistory, text) = History.previous st.History
+                    st <- { st with History = newHistory }
                     x.SetText (text)
 
             member private x.CmdHistoryNext () =
-                if History.nextAvailable state.History then
-                    let (newHistory, text) = state.History |> History.update (text.ToString()) |> History.next 
-                    state <- { state with History = newHistory }
+                if History.nextAvailable st.History then
+                    let (newHistory, text) = st.History |> History.update st.Text |> History.next 
+                    st <- { st with History = newHistory }
                     x.SetText (text)
 
             member private x.CmdKillToEOF () =
-                state <- { state with KillBuffer = text.ToString (cursor, text.Length-cursor) }
-                text.Length <- cursor;
-                x.ComputeRendered ();
-                x.RenderAfter (cursor);
+                let newKillBuffer = st.Text.Substring (st.Cursor, st.Text.Length-st.Cursor)
+                let newText = st.Text.Substring(0, st.Cursor)
+                st <- { st with KillBuffer = newKillBuffer; Text = newText; RenderedText = render newText }
+                
+                x.RenderAfter st.Cursor
 
             member private x.CmdYank () =
-                x.InsertTextAtCursor (state.KillBuffer)
+                x.InsertTextAtCursor st.KillBuffer
 
 
             member private x.InsertTextAtCursor str =
                 let prev_lines = x.LineCount;
-                text.Insert (cursor, str) |> ignore
-                x.ComputeRendered ()
+                let newText = st.Text.Insert (st.Cursor, str)
+                st <- { st with Text = newText; RenderedText = render newText}
                 if prev_lines <> x.LineCount then
-                    Console.SetCursorPosition (0, home_row)
+                    Console.SetCursorPosition (0, st.HomeRow)
                     x.Render ()
-                    cursor <- cursor + str.Length
-                    x.ForceCursor (cursor)
+                    st <- { st with Cursor = st.Cursor + str.Length }
+                    x.ForceCursor st.Cursor
                 else
-                    x.RenderFrom (cursor)
-                    cursor <- cursor + str.Length
-                    x.ForceCursor (cursor)
-                    x.UpdateHomeRow (x.TextToScreenPos (cursor))
-
-
+                    x.RenderFrom st.Cursor
+                    st <- { st with Cursor = st.Cursor + str.Length }
+                    x.ForceCursor st.Cursor
+                    x.UpdateHomeRow (x.TextToScreenPos st.Cursor)
         
             member private x.SetSearchPrompt s =
                 x.SetPrompt ("(reverse-i-search)`" + s + "': ")
 
             member private x.ReverseSearch () =
-                match searchState with
+                match st.SearchState with
                 | Some(search) ->
                     let mutable search_backward = true
 
-                    if cursor = text.Length then
+                    if st.Cursor = st.Text.Length then
                         // The cursor is at the end of the string
-                        let p = (text.ToString()).LastIndexOf (search.Term)
+                        let p = st.Text.LastIndexOf (search.Term)
                         if p <> -1 then
                             searchState <- Some({ search with MatchAt = p })
                             cursor <- p
-                            x.ForceCursor (cursor)
+                            x.ForceCursor st.Cursor
                             search_backward <- false
                     else
                         // The cursor is somewhere in the middle of the string
-                        let start = if cursor = search.MatchAt then cursor - 1 else cursor
+                        let start = if st.Cursor = search.MatchAt then st.Cursor - 1 else st.Cursor
                         if start <> -1 then
-                            let p = (text.ToString()).LastIndexOf (search.Term, start)
+                            let p = st.Text.LastIndexOf (search.Term, start)
                             if p <> -1 then
                                 searchState <- Some({ search with MatchAt = p })
                                 cursor <- p
-                                x.ForceCursor (cursor)
+                                x.ForceCursor st.Cursor
                                 search_backward <- false
 
                     if search_backward then
@@ -717,18 +745,18 @@ namespace Mono.Terminal
                 // If the new typed data still matches the current text, stay here
                 //
                 let mutable still_matches = false
-                if cursor < text.Length then
-                    let r = text.ToString (cursor, text.Length - cursor)
+                if st.Cursor < st.Text.Length then
+                    let r = st.Text.Substring (st.Cursor, st.Text.Length - st.Cursor)
                     if r.StartsWith newTerm then still_matches <- true
                 
                 if not still_matches then
                     x.ReverseSearch ()
        
             member private x.CmdRefresh () =
-                Console.Clear ();
-                max_rendered <- 0;
-                x.Render ();
-                x.ForceCursor (cursor);
+                Console.Clear ()
+                st.MaxRendered <- 0
+                x.Render ()
+                x.ForceCursor st.Cursor
 
             member private x.InterruptEdit (sender:obj) (a:ConsoleCancelEventArgs) =
                 // Do not abort our program:
@@ -750,7 +778,7 @@ namespace Mono.Terminal
                     (key, key.Modifiers)
 
             member private x.EditLoop () =
-                while not done_editing do
+                while not st.DoneEditing do
                     let (newInput, modifier) = readKeyWithEscMeaningAlt ()
                
                     let mutable handled = false;
@@ -788,17 +816,17 @@ namespace Mono.Terminal
                 x.ComputeRendered ()
                 cursor <- text.Length
                 x.Render ()
-                x.ForceCursor (cursor)
+                x.ForceCursor st.Cursor
 
             member private x.SetText newtext =
-                Console.SetCursorPosition (0, home_row)
+                Console.SetCursorPosition (0, st.HomeRow)
                 x.InitText (newtext)
 
             member private x.SetPrompt newprompt =
-                shown_prompt <- newprompt
-                Console.SetCursorPosition (0, home_row)
+                st.ShownPrompt <- newprompt
+                Console.SetCursorPosition (0, st.HomeRow)
                 x.Render ()
-                x.ForceCursor (cursor)
+                x.ForceCursor st.Cursor
        
             member public x.Edit prompt initial =
                 edit_thread <- Thread.CurrentThread
@@ -808,10 +836,10 @@ namespace Mono.Terminal
             
                 done_editing <- false
                 state <- { state with History = state.History |> History.cursorToEnd |> History.append initial }
-                max_rendered <- 0
+                st.MaxRendered <- 0
             
                 specified_prompt <- prompt
-                shown_prompt <- prompt;
+                st.ShownPrompt <- prompt;
                 x.InitText (Some(initial))
 
                 while not done_editing do
