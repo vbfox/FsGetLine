@@ -827,6 +827,9 @@ namespace Mono.Terminal
                 | st when st.DoneEditing -> st
                 | st -> st |> readOneInput |> readInputUntilDoneEditing
        
+            let updateGlobalState globalState st =
+                { globalState with LineEditorGlobalState.History = st.History; KillBuffer = st.KillBuffer }
+
             member public x.Edit prompt initial globalState =
                 let mutable st = makeDefaultLineEditorState globalState
                 st <-
@@ -865,15 +868,13 @@ namespace Mono.Terminal
             
                 Console.CancelKeyPress.RemoveHandler cancelHandler
 
-                let globalState = { globalState with History = st.History; KillBuffer = st.KillBuffer }
-
                 if st.SignalExit then
                     st.History |> History.save
-                    (globalState, None)
+                    (st |> updateGlobalState globalState, None)
                 else
                     if st.Text <> "" then
                         st <- { st with History = History.accept st.Text st.History }
                     else
                         st <- { st with History = History.removeLast st.History }
 
-                    (globalState, Some(st.Text))
+                    (st |> updateGlobalState globalState, Some(st.Text))
