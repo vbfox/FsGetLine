@@ -26,7 +26,6 @@
 namespace Mono.Terminal
 
     module GetLine =
-
         open System
         open System.Text
         open System.IO
@@ -74,127 +73,151 @@ namespace Mono.Terminal
 
         /// Emulates the bash-like behavior, where edits done to the
         /// history are recorded
-        type History(app : string, size : int) as x =
-            let mutable history : string array = Array.zeroCreate size
-            let mutable histfile = null
-            let mutable head = 0
-            let mutable tail = 0
-            let mutable cursor = 0
-            let mutable count = 0
+        module History =
+            type History =
+                {
+                    Lines : string array
+                    Head : int
+                    Tail : int
+                    Cursor : int
+                    Count : int
+                    App : string option
+                }
+                member this.Length with get() = this.Lines.Length
 
-            do
-                if app <> null then
-                    let dir = Environment.GetFolderPath (Environment.SpecialFolder.Personal)
-                    histfile <- Path.Combine (dir, ".mal-history");
+            let empty app size = { Lines = Array.zeroCreate size; Head = 0; Tail = 0; Cursor = 0; Count = 0; App = app}
 
-                if File.Exists histfile then
-                    use sr = File.OpenText histfile
-                    let mutable line = ""
+            let append line history =
+                let newLines = history.Lines |> Array.copy
+                newLines.[history.Head] <- line
+                let newHead = (history.Head+1) % history.Length
+                let newTail = if newHead = history.Tail then (history.Tail+1 % history.Length) else history.Tail
+                let newCount = if history.Count <> history.Length then history.Count + 1 else history.Count
 
-                    let mutable cont = true
-                    while cont do
-                        line <- sr.ReadLine ()
-                        if line <> null then
-                            if line <> "" then x.Append line
-                        else
-                            cont <- false
-            
-            member x.Close () =
-                if histfile <> null then
-                    use sw = File.CreateText histfile
-                    let start = if count = history.Length then head else tail
-                    for i = start to start + count - 1 do
-                        let p = i % history.Length
-                        sw.WriteLine history.[p]
-
-            /// Appends a value to the history
-            member x.Append s =
-                history.[head] <- s
-                head <- (head+1) % history.Length
-                if head = tail then
-                    tail <- (tail+1 % history.Length)
-                if count <> history.Length then
-                    count <- count + 1
-
-
+                { history with Lines = newLines; Head = newHead; Tail = newTail; Count = newCount}
 
             /// Updates the current cursor location with the string,
             /// to support editing of history items.   For the current
             /// line to participate, an Append must be done before.
-            member x.Update s =
-                history.[cursor] <- s
+            let update s history =
+                let newLines = history.Lines |> Array.copy
+                newLines.[history.Cursor] <- s
+                { history with Lines = newLines }
 
-            member x.RemoveLast () =
-                head <- head-1;
-                if head < 0 then
-                    head <- history.Length - 1
+            let removeLast history =
+                {
+                    history with
+                        Head = if history.Head = 0 then history.Length - 1 else history.Head - 1
+                }
             
-            member x.Accept s = 
-                let t = if head-1 >= 0 then head-1 else history.Length - 1
-                history.[t] <- s;
-            
-            member x.PreviousAvailable () =
-                if count = 0 then
+            let accept s history = 
+                let newLines = history.Lines |> Array.copy
+                let t = if history.Head - 1 >= 0 then history.Head - 1 else history.Length - 1
+                newLines.[t] <- s;
+                { history with Lines = newLines }
+
+            let previousAvailable history =
+                if history.Count = 0 then
                     false
                 else
-                    let next = if cursor-1 >= 0 then cursor-1 else count-1
-                    not (next = head)
-            
-            member x.NextAvailable () =
-                if count = 0 then
+                    let next = if history.Cursor-1 >= 0 then history.Cursor-1 else history.Count-1
+                    not (next = history.Head)
+
+            let nextAvailable history =
+                if history.Count = 0 then
                     false
                 else
-                    let next = (cursor + 1) % history.Length
-                    not (next = head)
-            
+                    let next = (history.Cursor + 1) % history.Length
+                    not (next = history.Head)
+
             /// Returns: a string with the previous line contents, or
             /// nul if there is no data in the history to move to.
-            member x.Previous () =
-                if not (x.PreviousAvailable()) then
-                    null
+            let previous history =
+                if not (previousAvailable history) then
+                    (history, None)
                 else
-                    cursor <- cursor - 1
-                    if cursor < 0 then
-                        cursor <- history.Length - 1
+                    let newCursor = if history.Cursor = 0 then history.Length - 1 else history.Cursor - 1
+                    ({ history with Cursor = newCursor }, Some(history.Lines.[newCursor]))
 
-                    history.[cursor]
-
-            member x.Next () =
-                if not (x.NextAvailable()) then
-                    null
+            let next history =
+                if not (nextAvailable history) then
+                    (history, None)
                 else
+                    let newCursor = (history.Cursor + 1) % history.Length
+                    ({ history with Cursor = newCursor }, Some(history.Lines.[newCursor]))
 
-                cursor <- (cursor + 1) % history.Length
-                history.[cursor]
+            let cursorToEnd history =
+                if history.Head <> history.Tail then
+                    { history with Cursor = history.Head }
+                else
+                    history
 
-            member x.CursorToEnd () =
-                if head <> tail then
-                    cursor <- head
-
-            member x.Dump () =
-                Console.WriteLine ("Head={0} Tail={1} Cursor={2} count={3}", head, tail, cursor, count);
+            let dump history =
+                printf "Head=%i Tail=%i Cursor=%i count=%i" history.Head history.Tail history.Cursor history.Count
                 for i = 0 to history.Length - 1 do
-                    let arrow = if i = cursor then "==>" else "   "
-                    Console.WriteLine (" {0} {1}: {2}", arrow, i, history.[i]);
+                    let cursorIndicator = if i = history.Cursor then "==>" else "   "
+                    printf " %s %i: %s" cursorIndicator i history.Lines.[i]
 
-            member x.SearchBackward (term:string) =
+            let searchBackward (term:string) history =
                 let mutable i = 0
                 let mutable found = false
-                while (i < count && not found) do
-                    let mutable slot = cursor-i-1;
+                let mutable newCursor = history.Cursor
+                while (i < history.Count && not found) do
+                    let mutable slot = history.Cursor-i-1;
                     if slot < 0 then
                         slot <- history.Length+slot;
                     if slot >= history.Length then
                         slot <- 0
-                    if (history.[slot] <> null && history.[slot].IndexOf (term) <> -1) then
-                        cursor <- slot;
+                    if (history.Lines.[slot] <> null && history.Lines.[slot].IndexOf (term) <> -1) then
+                        newCursor <- slot;
                         found <- true
 
                     i <- i + 1
 
-                if found then history.[cursor] else null
+                if found then
+                    ({history with Cursor = newCursor}, Some(history.Lines.[newCursor]))
+                else
+                    (history, None)
 
-        type LineEditor (name : string, histsize : int) as x =
+            let private getFile app = 
+                match app with
+                | Some(app) ->
+                    let dir = Environment.GetFolderPath (Environment.SpecialFolder.Personal)
+                    let path = Path.Combine (dir, "." + app + "-history")
+                    Some(path)
+                | None ->
+                    None
+
+            let load app size =
+                let histfile = getFile app
+
+                match histfile with
+                | Some(histfile) ->
+                    if File.Exists histfile then
+                        let rec loadNextLine (reader:StreamReader) history =
+                            let line = reader.ReadLine ()
+                            match line with
+                            | null -> history
+                            | _ -> history |> append line |> loadNextLine reader
+
+                        use sr = File.OpenText histfile
+                        loadNextLine sr (empty app size)
+                    else
+                        empty app size
+                | None -> empty app size               
+
+            let save history =
+                let histfile = getFile history.App
+                match histfile with
+                | Some(histfile) ->
+                    use sw = File.CreateText histfile
+                    let start = if history.Count = history.Length then history.Head else history.Tail
+                    for i = start to start + history.Count - 1 do
+                        let p = i % history.Length
+                        sw.WriteLine history.Lines.[p]
+                | None -> ()
+
+        type LineEditor (name : string option, histsize : int) as x =
             // The text being edited.
             let mutable text = new StringBuilder ()
 
@@ -223,7 +246,7 @@ namespace Mono.Terminal
             let mutable edit_thread : Thread = null
 
             // Our object that tracks history
-            let history = new History (name, histsize)
+            let mutable history = History.empty name histsize
 
             // The contents of the kill buffer (cut/paste in Emacs parlance)
             let mutable kill_buffer = "";
@@ -291,7 +314,7 @@ namespace Mono.Terminal
                     |]
 
             member private x.CmdDebug () =
-                history.Dump ()
+                history |> History.dump
                 Console.WriteLine ()
                 x.Render ()
 
@@ -560,25 +583,25 @@ namespace Mono.Terminal
                     text.Remove (pos, cursor-pos) |> ignore
                     x.ComputeRendered ()
                     x.RenderAfter (pos)
-            
-
         
             //
             // Adds the current line to the history if needed
             //
             member private x.HistoryUpdateLine () =
-                history.Update (text.ToString ())
+                history <- history |> History.update (text.ToString ())
         
             member private x.CmdHistoryPrev () =
-                if history.PreviousAvailable () then
+                if History.previousAvailable history then
                     x.HistoryUpdateLine ()
-                    x.SetText (history.Previous ())
+                    let (newHistory, text) = History.previous history
+                    history <- newHistory
+                    x.SetText (text)
 
             member private x.CmdHistoryNext () =
-                if history.NextAvailable() then
-                    history.Update (text.ToString ())
-                    x.SetText (history.Next ());
-
+                if History.nextAvailable history then
+                    let (newHistory, text) = history |> History.update (text.ToString()) |> History.next 
+                    history <- newHistory
+                    x.SetText (text)
 
             member private x.CmdKillToEOF () =
                 kill_buffer <- text.ToString (cursor, text.Length-cursor);
@@ -615,7 +638,6 @@ namespace Mono.Terminal
 
                 if cursor = text.Length then
                     // The cursor is at the end of the string
-                
                     let p = (text.ToString()).LastIndexOf (search)
                     if p <> -1 then
                         match_at <- p
@@ -636,11 +658,14 @@ namespace Mono.Terminal
                 if search_backward then
                     // Need to search backwards in history
                     x.HistoryUpdateLine ()
-                    let s = history.SearchBackward (search)
-                    if s <> null then
-                        match_at <- -1;
-                        x.SetText (s);
-                        x.ReverseSearch ();
+                    let (newHistory, searchResult) = History.searchBackward search history
+                    history <- newHistory
+                    match searchResult with
+                    | Some(_) ->
+                        match_at <- -1
+                        x.SetText searchResult
+                        x.ReverseSearch ()
+                    | None -> ()
 
 
         
@@ -736,8 +761,8 @@ namespace Mono.Terminal
                     else if (newInput.KeyChar <> (char) 0) then
                         x.HandleChar (newInput.KeyChar)
                  
-            member private x.InitText (initial:string) =
-                text <- new StringBuilder (initial)
+            member private x.InitText (initial:string option) =
+                text <- match initial with | Some(initial) -> new StringBuilder (initial) | None -> new StringBuilder()
                 x.ComputeRendered ()
                 cursor <- text.Length
                 x.Render ()
@@ -760,13 +785,12 @@ namespace Mono.Terminal
                 Console.CancelKeyPress.AddHandler cancelHandler
             
                 done_editing <- false
-                history.CursorToEnd ()
+                history <- history |> History.cursorToEnd |> History.append initial
                 max_rendered <- 0
             
                 specified_prompt <- prompt
                 shown_prompt <- prompt;
-                x.InitText (initial);
-                history.Append (initial);
+                x.InitText (Some(initial))
 
                 while not done_editing do
                     try
@@ -777,24 +801,24 @@ namespace Mono.Terminal
                         Thread.ResetAbort ()
                         Console.WriteLine ()
                         x.SetPrompt (prompt)
-                        x.SetText ("")
+                        x.SetText (Some(""))
                 
                 Console.WriteLine ();
             
                 Console.CancelKeyPress.RemoveHandler cancelHandler
 
                 if text = null then
-                    history.Close ()
+                    history |> History.save
                     None
                 else
                     let result = text.ToString ()
                     if result <> "" then
-                        history.Accept (result)
+                        history <- History.accept result history
                     else
-                        history.RemoveLast ()
+                        history <- History.removeLast history
 
                     Some(result)
         
             member public x. SaveHistory () =
-                history.Close ()
+                history |> History.save
                 

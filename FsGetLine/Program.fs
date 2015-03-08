@@ -10,7 +10,7 @@ namespace Mono.Terminal
 
         [<EntryPoint>]
         let main argv = 
-            let le = new LineEditor("foo")
+            let le = new LineEditor(Some("foo"))
             let mutable s = Some("")
             while s.IsSome do
                 s <- le.Edit "shell> " ""
