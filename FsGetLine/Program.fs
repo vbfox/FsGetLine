@@ -6,17 +6,17 @@ namespace Mono.Terminal
     module GetLineTestApp =
 
         open System
-        open Mono.Terminal.GetLine
+        open Mono.Terminal
 
         [<EntryPoint>]
         let main argv = 
-            let mutable editorState = makeGlobalState (Some("foo")) 100
+            let mutable editor = GetLine.create (fun s -> { s with AppName = Some("foo") })
             let mutable s = Some("")
             while s.IsSome do
-                let (newState, line) = editLine "shell> " "" editorState
-                editorState <- newState
+                let (newEditor, line) = editor |> GetLine.get "F#" ""
+                editor <- newEditor
                 s <- line
-
+                
                 match s with
                 | Some(s) -> Console.WriteLine ("----> [{0}]", s);
                 | None -> ()

@@ -208,7 +208,61 @@ namespace Mono.Terminal
                         sw.WriteLine history.Lines.[p]
                 | None -> ()
 
-        type LineEditorGlobalState =
+        type PromptDisplay =
+            {
+                Show : string -> unit
+                ExtraChars : int
+            }
+
+        type GetLineSettings =
+            {
+                AppName : string option
+
+                HistorySize : int
+
+                /// Invoked when the user requests auto-completion using the tab character
+                AutoCompleteEvent : AutoCompleteHandler option
+
+                TabAtStartCompletes : bool
+
+                PromptDisplay : PromptDisplay
+
+                SearchPromptDisplay : PromptDisplay
+            }
+
+        let private defaultPromptDisplay (s:string) =
+            let previousColor = Console.ForegroundColor
+            Console.ForegroundColor <- ConsoleColor.Cyan
+            Console.Write(s)
+            Console.ForegroundColor <- ConsoleColor.DarkGray
+            Console.Write(" > " )
+            Console.ForegroundColor <- previousColor
+
+        let private defaultSearchPromptDisplay (s:string) =
+            let previousColor = Console.ForegroundColor
+            Console.ForegroundColor <- ConsoleColor.DarkGray
+            Console.Write("(")
+            Console.ForegroundColor <- ConsoleColor.Cyan
+            Console.Write("reverse-i-search")
+            Console.ForegroundColor <- ConsoleColor.DarkGray
+            Console.Write(")`")
+            Console.ForegroundColor <- previousColor
+            Console.Write(s)
+            Console.ForegroundColor <- ConsoleColor.DarkGray
+            Console.Write("': ")
+            Console.ForegroundColor <- previousColor
+
+        let private defaultSettings = 
+            {
+                AppName = None
+                HistorySize = 10
+                AutoCompleteEvent = None
+                TabAtStartCompletes = true
+                PromptDisplay = { Show = defaultPromptDisplay; ExtraChars = " > ".Length }
+                SearchPromptDisplay = { Show = defaultSearchPromptDisplay; ExtraChars = "(reverse-i-search)`': ".Length }
+            }
+
+        type GetLine =
             {
                 /// Our object that tracks history
                 History : History.History
@@ -216,21 +270,18 @@ namespace Mono.Terminal
                 /// The contents of the kill buffer (cut/paste in Emacs parlance)
                 KillBuffer : string
 
-                /// Invoked when the user requests auto-completion using the tab character
-                AutoCompleteEvent : AutoCompleteHandler option
-
-                TabAtStartCompletes : bool
+                Settings : GetLineSettings
             }
 
-        let makeGlobalState (name : string option) (histsize : int) =
+        let create (getSettings : GetLineSettings -> GetLineSettings) =
+            let settings = getSettings defaultSettings
             {
-                History = History.empty name histsize
+                History = History.empty settings.AppName settings.HistorySize
                 KillBuffer = ""
-                AutoCompleteEvent = None
-                TabAtStartCompletes = true
+                Settings = settings
             }
 
-        type SearchState =
+        type private SearchState =
             {
                 /// Current search direction
                 Direction: SearchDirection
@@ -242,7 +293,7 @@ namespace Mono.Terminal
                 Term: string
             }
 
-        type LineEditorState =
+        type private LineEditorState =
             {
                 /// The text being edited.
                 Text : string
@@ -255,6 +306,7 @@ namespace Mono.Terminal
 
                 /// The prompt shown to the user.
                 ShownPrompt : string
+                ShownPromptDisplay : PromptDisplay
 
                 /// The current cursor position, indexes into "text", for an index
                 /// into st.RenderedText, use TextToRenderPos
@@ -281,24 +333,22 @@ namespace Mono.Terminal
                 /// The contents of the kill buffer (cut/paste in Emacs parlance)
                 KillBuffer : string
 
-                /// Invoked when the user requests auto-completion using the tab character
-                AutoCompleteEvent : AutoCompleteHandler option
-
                 SearchState : SearchState option
                 PreviousSearch : string option
         
                 /// Used to implement the Kill semantics (multiple Alt-Ds accumulate)
                 LastCommand : Command option
 
-                TabAtStartCompletes : bool
+                Settings : GetLineSettings
             }
 
-        let makeDefaultLineEditorState (globalState : LineEditorGlobalState) =
+        let private makeDefaultLineEditorState (globalState : GetLine) =
             {
                 Text = ""
                 RenderedText = ""
                 SpecifiedPrompt = ""
                 ShownPrompt = ""
+                ShownPromptDisplay = globalState.Settings.PromptDisplay
                 Cursor = 0
                 HomeRow = 0
                 MaxRendered = 0
@@ -307,16 +357,15 @@ namespace Mono.Terminal
                 EditThread = null
                 History = globalState.History
                 KillBuffer = globalState.KillBuffer
-                AutoCompleteEvent = globalState.AutoCompleteEvent
                 SearchState = None
                 PreviousSearch = None
                 LastCommand = None
-                TabAtStartCompletes = globalState.TabAtStartCompletes
+                Settings = globalState.Settings
             }
 
-        type KeyHandler = LineEditorState -> LineEditorState
+        type private KeyHandler = LineEditorState -> LineEditorState
 
-        type Handler(cmd : Command, keyInfo : ConsoleKeyInfo, h : KeyHandler) =
+        type private Handler(cmd : Command, keyInfo : ConsoleKeyInfo, h : KeyHandler) =
             member val HandledCommand = cmd
             member val KeyInfo = keyInfo
             member val KeyHandler = h
@@ -345,12 +394,14 @@ namespace Mono.Terminal
 
             p
             
-        let private TextToScreenPos pos st = st.ShownPrompt.Length + (TextToRenderPos pos st.Text)
+        let private promptLen st = st.ShownPrompt.Length + st.ShownPromptDisplay.ExtraChars
 
-        let private LineCount st = (st.ShownPrompt.Length + st.RenderedText.Length)/Console.WindowWidth
+        let private TextToScreenPos pos st = (promptLen st) + (TextToRenderPos pos st.Text)
+
+        let private LineCount st = ((promptLen st) + st.RenderedText.Length)/Console.WindowWidth
 
         let private ForceCursor newpos st = 
-            let actual_pos = st.ShownPrompt.Length + (TextToRenderPos newpos st.Text)
+            let actual_pos = (promptLen st) + (TextToRenderPos newpos st.Text)
             let row = st.HomeRow + (actual_pos/Console.WindowWidth)
             let row = if row < Console.BufferHeight then row else Console.BufferHeight-1
             let col = actual_pos % Console.WindowWidth
@@ -387,15 +438,18 @@ namespace Mono.Terminal
 
             { st with HomeRow = System.Math.Max (0, Console.CursorTop - (lines - 1)) }
 
+
+
         let private Render st =
-            Console.Write st.ShownPrompt
+            st.ShownPromptDisplay.Show st.ShownPrompt
+            let promptLen = st |> promptLen
             Console.Write st.RenderedText
 
-            let max = System.Math.Max (st.RenderedText.Length + st.ShownPrompt.Length, st.MaxRendered);
+            let max = System.Math.Max (st.RenderedText.Length + promptLen, st.MaxRendered);
             
-            for i = st.RenderedText.Length + st.ShownPrompt.Length to st.MaxRendered - 1 do
+            for i = st.RenderedText.Length + promptLen to st.MaxRendered - 1 do
                 Console.Write (' ');
-            let st = { st with MaxRendered = st.ShownPrompt.Length + st.RenderedText.Length }
+            let st = { st with MaxRendered = promptLen + st.RenderedText.Length }
 
             // Write one more to ensure that we always wrap around properly if we are at the
             // end of a line.
@@ -416,10 +470,12 @@ namespace Mono.Terminal
                 Console.Write (st.RenderedText.[i])
                 i <- i + 1
 
-            if (st.ShownPrompt.Length + st.RenderedText.Length) > st.MaxRendered then
-                { st with MaxRendered = st.ShownPrompt.Length + st.RenderedText.Length }
+            let promptLen = st |> promptLen
+
+            if (promptLen + st.RenderedText.Length) > st.MaxRendered then
+                { st with MaxRendered = promptLen + st.RenderedText.Length }
             else
-                let max_extra = st.MaxRendered - st.ShownPrompt.Length
+                let max_extra = st.MaxRendered - promptLen
                 while i < max_extra do
                     Console.Write (' ')
                     i <- i + 1
@@ -465,14 +521,17 @@ namespace Mono.Terminal
             Console.SetCursorPosition (0, st.HomeRow)
             st |> InitText (newtext)
 
-        let private SetPrompt newprompt st =
+        let private SetPromptCore newprompt display st =
             Console.SetCursorPosition (0, st.HomeRow)
-            { st with ShownPrompt = newprompt }
+            { st with ShownPrompt = newprompt; ShownPromptDisplay = display }
                 |> Render
                 |> ForceCursor st.Cursor
 
+        let private SetPrompt newprompt st =
+            st |> SetPromptCore newprompt st.Settings.PromptDisplay
+
         let private SetSearchPrompt s st =
-           st |> SetPrompt ("(reverse-i-search)`" + s + "': ")
+           st |> SetPromptCore s st.Settings.SearchPromptDisplay
 
         //
         // Adds the current line to the history if needed
@@ -536,8 +595,8 @@ namespace Mono.Terminal
         let private CmdTabOrComplete st =
             let mutable complete = false;
 
-            if st.AutoCompleteEvent.IsSome then
-                if st.TabAtStartCompletes then
+            if st.Settings.AutoCompleteEvent.IsSome then
+                if st.Settings.TabAtStartCompletes then
                     complete <- true
                 else 
                     let mutable i = 0
@@ -546,7 +605,7 @@ namespace Mono.Terminal
                             complete <- true
 
                 if complete then
-                    let completion = st.AutoCompleteEvent.Value st.Text st.Cursor
+                    let completion = st.Settings.AutoCompleteEvent.Value st.Text st.Cursor
                     let completions = completion.Result
                     if completions.Length <> 0 then
                         let ncompletions = completions.Length
@@ -817,11 +876,11 @@ namespace Mono.Terminal
             | st when st.DoneEditing -> st
             | st -> st |> readOneInput |> readInputUntilDoneEditing
        
-        let private updateGlobalState globalState st =
-            { globalState with LineEditorGlobalState.History = st.History; KillBuffer = st.KillBuffer }
+        let private updateEditor editor st =
+            { editor with GetLine.History = st.History; KillBuffer = st.KillBuffer }
 
-        let editLine prompt initial globalState =
-            let mutable st = makeDefaultLineEditorState globalState
+        let get prompt initial editor =
+            let mutable st = makeDefaultLineEditorState editor
             st <-
                 {
                     st with
@@ -832,6 +891,7 @@ namespace Mono.Terminal
                         MaxRendered = 0
                         SpecifiedPrompt = prompt
                         ShownPrompt = prompt
+                        ShownPromptDisplay = editor.Settings.PromptDisplay
                 }
 
             let cancelHandler = new ConsoleCancelEventHandler(interruptEdit Thread.CurrentThread)
@@ -860,11 +920,11 @@ namespace Mono.Terminal
 
             if st.SignalExit then
                 st.History |> History.save
-                (st |> updateGlobalState globalState, None)
+                (st |> updateEditor editor, None)
             else
                 if st.Text <> "" then
                     st <- { st with History = History.accept st.Text st.History }
                 else
                     st <- { st with History = History.removeLast st.History }
 
-                (st |> updateGlobalState globalState, Some(st.Text))
+                (st |> updateEditor editor, Some(st.Text))
