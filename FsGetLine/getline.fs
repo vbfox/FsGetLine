@@ -34,7 +34,6 @@ namespace Mono.Terminal
 
         type Completion = { Result : string list; Prefix : string }
         type AutoCompleteHandler = string -> int -> Completion
-        type KeyHandler = unit -> unit
 
         type Command =
             | Done = 1
@@ -61,16 +60,7 @@ namespace Mono.Terminal
             | Forward = 1
             | Backward = 2
 
-        type Handler(cmd : Command, keyInfo : ConsoleKeyInfo, h : KeyHandler) =
-            member val HandledCommand = cmd
-            member val KeyInfo = keyInfo
-            member val KeyHandler = h
 
-            new(cmd : Command, key, h : KeyHandler) = Handler(cmd, new ConsoleKeyInfo((char) 0, key, false, false, false), h)
-            new(cmd : Command, c, h : KeyHandler) = Handler(cmd, new ConsoleKeyInfo (c, ConsoleKey.Zoom, false, false, false), h)
-            
-            static member Alt cmd c k h = Handler (cmd, new ConsoleKeyInfo (c, k, false, true, false), h)
-            static member Control cmd (c : char) h = Handler (cmd, (char) ((int)c - (int)'A' + 1), h)
 
         /// Emulates the bash-like behavior, where edits done to the
         /// history are recorded
@@ -228,6 +218,8 @@ namespace Mono.Terminal
 
                 /// Invoked when the user requests auto-completion using the tab character
                 AutoCompleteEvent : AutoCompleteHandler option
+
+                TabAtStartCompletes : bool
             }
 
         let makeGlobalState (name : string option) (histsize : int) =
@@ -235,6 +227,7 @@ namespace Mono.Terminal
                 History = History.empty name histsize
                 KillBuffer = ""
                 AutoCompleteEvent = None
+                TabAtStartCompletes = true
             }
 
         type SearchState =
@@ -296,6 +289,8 @@ namespace Mono.Terminal
         
                 /// Used to implement the Kill semantics (multiple Alt-Ds accumulate)
                 LastCommand : Command option
+
+                TabAtStartCompletes : bool
             }
 
         let makeDefaultLineEditorState (name : string option) (histsize : int) =
@@ -316,9 +311,433 @@ namespace Mono.Terminal
                 SearchState = None
                 PreviousSearch = None
                 LastCommand = None
+                TabAtStartCompletes = true
             }
 
-        type LineEditor (name : string option, histsize : int) as x =
+        type KeyHandler = LineEditorState -> LineEditorState
+
+        type Handler(cmd : Command, keyInfo : ConsoleKeyInfo, h : KeyHandler) =
+            member val HandledCommand = cmd
+            member val KeyInfo = keyInfo
+            member val KeyHandler = h
+
+            new(cmd : Command, key, h : KeyHandler) = Handler(cmd, new ConsoleKeyInfo((char) 0, key, false, false, false), h)
+            new(cmd : Command, c, h : KeyHandler) = Handler(cmd, new ConsoleKeyInfo (c, ConsoleKey.Zoom, false, false, false), h)
+            
+            static member Alt cmd c k h = Handler (cmd, new ConsoleKeyInfo (c, k, false, true, false), h)
+            static member Control cmd (c : char) h = Handler (cmd, (char) ((int)c - (int)'A' + 1), h)
+
+        let private CmdDone st = { st with DoneEditing = true}
+
+        let private TextToRenderPos pos (text:string) =
+            let mutable p = 0;
+
+            for i = 0 to pos - 1 do
+                let c = (int) text.[i];
+                
+                if c < 26 then
+                    if c = 9 then
+                        p <- p + 4;
+                    else
+                        p <- p + 2;
+                else
+                    p <- p + 1
+
+            p
+            
+        let private TextToScreenPos pos st = st.ShownPrompt.Length + (TextToRenderPos pos st.Text)
+
+        let private LineCount st = (st.ShownPrompt.Length + st.RenderedText.Length)/Console.WindowWidth
+
+        let private ForceCursor newpos st = 
+            let actual_pos = st.ShownPrompt.Length + (TextToRenderPos newpos st.Text)
+            let row = st.HomeRow + (actual_pos/Console.WindowWidth)
+            let row = if row < Console.BufferHeight then row else Console.BufferHeight-1
+            let col = actual_pos % Console.WindowWidth
+
+            Console.SetCursorPosition (col, row);
+
+            { st with Cursor = newpos }
+
+        let private UpdateCursor newpos st =
+            if st.Cursor <> newpos then
+                st |> ForceCursor newpos
+            else
+                st
+
+        let private render (text:string) =                 
+            let renderedText = new StringBuilder()
+
+            for i = 0 to text.Length - 1 do
+                let c = (int) text.[i];
+                if c < 26 then
+                    if c = (int)'\t' then
+                        renderedText.Append ("    ") |> ignore
+                    else
+                        renderedText.Append ('^') |> ignore
+                        renderedText.Append ((char) (c + (int) 'A' - 1)) |> ignore
+                        
+                else
+                    renderedText.Append ((char)c) |> ignore
+
+            renderedText.ToString()
+
+        let private UpdateHomeRow screenpos st = 
+            let lines = 1 + (screenpos / Console.WindowWidth);
+
+            { st with HomeRow = System.Math.Max (0, Console.CursorTop - (lines - 1)) }
+
+        let private Render st =
+            Console.Write st.ShownPrompt
+            Console.Write st.RenderedText
+
+            let max = System.Math.Max (st.RenderedText.Length + st.ShownPrompt.Length, st.MaxRendered);
+            
+            for i = st.RenderedText.Length + st.ShownPrompt.Length to st.MaxRendered - 1 do
+                Console.Write (' ');
+            let st = { st with MaxRendered = st.ShownPrompt.Length + st.RenderedText.Length }
+
+            // Write one more to ensure that we always wrap around properly if we are at the
+            // end of a line.
+            Console.Write ' '
+
+            st |> UpdateHomeRow max
+
+        let private CmdDebug st =
+            st.History |> History.dump
+            Console.WriteLine ()
+            st |> Render
+
+        let private RenderFrom pos st =
+            let rpos = TextToRenderPos pos st.Text
+            let mutable i = rpos;
+            
+            while i < st.RenderedText.Length do
+                Console.Write (st.RenderedText.[i])
+                i <- i + 1
+
+            if (st.ShownPrompt.Length + st.RenderedText.Length) > st.MaxRendered then
+                { st with MaxRendered = st.ShownPrompt.Length + st.RenderedText.Length }
+            else
+                let max_extra = st.MaxRendered - st.ShownPrompt.Length
+                while i < max_extra do
+                    Console.Write (' ')
+                    i <- i + 1
+                st
+
+        let private InsertChar (c:char) st =
+            let prev_lines = LineCount st
+            let newText = st.Text.Insert (st.Cursor, (string)c)
+            
+            let st = { st with Text = newText; RenderedText = render newText }
+                
+            if prev_lines <> (LineCount st) then
+                Console.SetCursorPosition (0, st.HomeRow)
+                let newCursor = st.Cursor + 1
+                st
+                    |> Render
+                    |> ForceCursor newCursor
+            else 
+                let newCursor = st.Cursor + 1
+                st
+                    |> RenderFrom st.Cursor
+                    |> ForceCursor newCursor
+                    |> UpdateHomeRow (TextToScreenPos newCursor st)
+
+        let private InsertTextAtCursor str st =
+            let prev_lines = st |> LineCount;
+            let newText = st.Text.Insert (st.Cursor, str)
+            let st = { st with Text = newText; RenderedText = render newText}
+            if prev_lines <> (LineCount st) then
+                Console.SetCursorPosition (0, st.HomeRow)
+                st |> Render |> ForceCursor (st.Cursor + str.Length)
+            else
+                let st = st |> RenderFrom st.Cursor |> ForceCursor (st.Cursor + str.Length)
+                st |> UpdateHomeRow (TextToScreenPos st.Cursor st)
+
+        let private InitText (initial:string option) st =
+            let newText = match initial with | Some(null) | None -> "" | Some(initial) -> initial
+            { st with Cursor = newText.Length; Text = newText; RenderedText = render newText }
+                |> Render 
+                |> ForceCursor newText.Length
+
+        let private SetText newtext st =
+            Console.SetCursorPosition (0, st.HomeRow)
+            st |> InitText (newtext)
+
+        let private SetPrompt newprompt st =
+            Console.SetCursorPosition (0, st.HomeRow)
+            { st with ShownPrompt = newprompt }
+                |> Render
+                |> ForceCursor st.Cursor
+
+        let private SetSearchPrompt s st =
+           st |> SetPrompt ("(reverse-i-search)`" + s + "': ")
+
+        //
+        // Adds the current line to the history if needed
+        //
+        let private HistoryUpdateLine st =
+            let newHistory = st.History |> History.update st.Text
+            { st with History = newHistory }
+
+        let rec private ReverseSearch st =
+            match st.SearchState with
+            | Some(search) ->
+                let mutable p = -1
+                if st.Cursor = st.Text.Length then
+                    // The cursor is at the end of the string
+                    p <- st.Text.LastIndexOf (search.Term)
+                else
+                    // The cursor is somewhere in the middle of the string
+                    let start = if st.Cursor = search.MatchAt then st.Cursor - 1 else st.Cursor
+                    if start <> -1 then p <- st.Text.LastIndexOf (search.Term, start)
+
+                if p <> -1 then
+                    { st with SearchState = Some({ search with MatchAt = p })} |> ForceCursor p
+                else
+                    // Need to search backwards in history
+                    let st = st |> HistoryUpdateLine
+                    let (newHistory, searchResult) = History.searchBackward search.Term st.History
+                    let st = { st with History = newHistory }
+                    match searchResult with
+                    | Some(_) ->
+                        { st with SearchState = Some({ search with MatchAt = -1 }) }
+                            |> SetText searchResult
+                            |> ReverseSearch 
+                    | None -> st
+            | None ->
+                failwith "No search in progress"
+
+        let private SearchAppend (c:char) search st =
+            let newTerm = search.Term + (string)c
+            let st =
+                { st with SearchState = Some { search with Term = newTerm } }
+                |> SetSearchPrompt newTerm
+
+            //
+            // If the new typed data still matches the current text, stay here
+            //
+            let mutable still_matches = false
+            if st.Cursor < st.Text.Length then
+                let r = st.Text.Substring (st.Cursor, st.Text.Length - st.Cursor)
+                if r.StartsWith newTerm then still_matches <- true
+                
+            if not still_matches then
+                st |> ReverseSearch
+            else
+                st
+
+        let private HandleChar c st =
+            match st.SearchState with
+            | Some(search) -> st |> SearchAppend c search
+            | None -> st |> InsertChar (c)
+
+        let private CmdTabOrComplete st =
+            let mutable complete = false;
+
+            if st.AutoCompleteEvent.IsSome then
+                if st.TabAtStartCompletes then
+                    complete <- true
+                else 
+                    let mutable i = 0
+                    while i < st.Cursor && not complete do
+                        if not (Char.IsWhiteSpace (st.Text.[i])) then
+                            complete <- true
+
+                if complete then
+                    let completion = st.AutoCompleteEvent.Value st.Text st.Cursor
+                    let completions = completion.Result
+                    if completions.Length <> 0 then
+                        let ncompletions = completions.Length
+                    
+                        if completions.Length = 1 then
+                            st |> InsertTextAtCursor (completions.[0])
+                        else
+                            let mutable last = -1
+                            let mutable p = 0
+                            let mutable mismatch = false
+                            while p < completions.[0].Length && not mismatch do
+                                let c = completions.[0].[p]
+                                let mutable i = 1
+                                while i < ncompletions && not mismatch do
+                                    if completions.[i].Length < p then mismatch <- true
+                                    if completions.[i].[p] <> c then mismatch <- true
+                                    
+                                if not mismatch then
+                                    last <- p;
+                                    p <- p + 1
+
+                            let st = 
+                                if last <> -1 then
+                                    st |> InsertTextAtCursor (completions.[0].Substring (0, last+1))
+                                else
+                                    st
+                                
+                            Console.WriteLine ()
+                            for s in completions do
+                                Console.Write (completion.Prefix)
+                                Console.Write (s)
+                                Console.Write (' ')
+                                
+                            Console.WriteLine ()
+                            st |> Render |> ForceCursor st.Cursor
+                    else
+                        st
+                else
+                    st |> HandleChar ('\t')
+            else
+                st |> HandleChar ('t')
+
+        let private CmdHome st = st |> UpdateCursor 0
+        let private CmdEnd st = st |> UpdateCursor st.Text.Length
+        let private CmdLeft st = if st.Cursor <> 0 then st |> UpdateCursor (st.Cursor-1) else st
+
+        let private WordForward p st =
+            let text = st.Text
+
+            if (p >= text.Length) then
+                -1
+            else
+                let mutable i = p;
+                if Char.IsPunctuation (text.[p]) || Char.IsSymbol (text.[p]) || Char.IsWhiteSpace (text.[p]) then
+                    while (i < text.Length && not (Char.IsLetterOrDigit (text.[i]))) do i <- i + 1
+                    while (i < text.Length && Char.IsLetterOrDigit (text.[i])) do i <- i + 1
+                else
+                    while (i < text.Length && Char.IsLetterOrDigit (text.[i])) do i <- i + 1
+                    
+                if i <> p then i else -1
+            
+
+        let private WordBackward p st =
+            let text = st.Text
+
+            if p = 0 then
+                -1
+            else if p = 1 then
+                0
+            else
+                let mutable i = p-1;
+            
+                if Char.IsPunctuation (text.[i]) || Char.IsSymbol (text.[i]) || Char.IsWhiteSpace (text.[i]) then
+                    while (i >= 0 && not (Char.IsLetterOrDigit (text.[i]))) do i <- i - 1
+                    while (i >= 0 && Char.IsLetterOrDigit (text.[i])) do i <- i - 1
+                else
+                    while (i >= 0 && Char.IsLetterOrDigit (text.[i])) do i <- i - 1
+                    
+                i <- i + 1
+            
+                if i <> p then i else -1
+
+        let private CmdBackwardWord st =
+            let p = WordBackward st.Cursor st
+            if p <> -1 then st |> UpdateCursor p else st
+
+        let private CmdForwardWord st =
+            let p = WordForward st.Cursor st
+            if p <> -1 then st |> UpdateCursor p else st
+
+        let private CmdRight st =
+            if (st.Cursor <> st.Text.Length) then st |> UpdateCursor (st.Cursor+1) else st
+
+        let private RenderAfter p st =
+            let st = st |> ForceCursor p |> RenderFrom p
+            st |> ForceCursor st.Cursor
+        
+        let private CmdBackspace st =
+            if st.Cursor <> 0 then
+                let newCursor = st.Cursor - 1
+                let newText = st.Text.Remove (newCursor, 1)
+                let st = { st with Cursor = newCursor; Text = newText; RenderedText = render newText}
+                st |> RenderAfter newCursor
+            else
+                st
+
+        let private CmdDeleteChar st =
+            if st.Text.Length = 0 then
+                Console.WriteLine ()
+                // If there is no input, this behaves like EOF
+                { st with DoneEditing = true; SignalExit = true }
+            else if (st.Cursor <> st.Text.Length) then
+                let newText = st.Text.Remove (st.Cursor, 1)
+                let st = { st with Text = newText; RenderedText = render newText }
+                st |> RenderAfter st.Cursor
+            else
+                st
+            
+        let private CmdDeleteWord st =
+            let pos = st |> WordForward st.Cursor
+
+            if pos <> -1 then
+                let k = st.Text.Substring (st.Cursor, pos-st.Cursor)
+           
+                let newKillBuffer = if st.LastCommand = Some(Command.DeleteWord) then st.KillBuffer + k else k
+                let newText = st.Text.Remove (st.Cursor, pos-st.Cursor)
+
+                { st with KillBuffer = newKillBuffer; Text = newText; RenderedText = render newText }
+                    |> RenderAfter st.Cursor
+            else
+                st
+        
+        let private CmdDeleteBackword st =
+            let pos = st |> WordBackward st.Cursor
+            if pos <> -1 then
+                let k = st.Text.Substring (pos, st.Cursor-pos)
+            
+                let newKillBuffer = if st.LastCommand = Some(Command.DeleteBackword) then st.KillBuffer + k else k
+                let newText = st.Text.Remove (pos, st.Cursor-pos)
+                { st with KillBuffer = newKillBuffer; Text = newText; RenderedText = render newText }
+                    |> RenderAfter pos
+            else
+                st
+      
+        let private CmdHistoryPrev st =
+            if History.previousAvailable st.History then
+                let (newHistory, text) = st.History |> History.update st.Text |> History.previous
+                { st with History = newHistory } |> SetText text
+            else
+                st
+
+        let private CmdHistoryNext st =
+            if History.nextAvailable st.History then
+                let (newHistory, text) = st.History |> History.update st.Text |> History.next 
+                { st with History = newHistory } |> SetText text
+            else
+                st
+
+        let private CmdKillToEOF st =
+            let newKillBuffer = st.Text.Substring (st.Cursor, st.Text.Length-st.Cursor)
+            let newText = st.Text.Substring(0, st.Cursor)
+            { st with KillBuffer = newKillBuffer; Text = newText; RenderedText = render newText }
+                |> RenderAfter st.Cursor
+
+        let private CmdYank st =
+            st |> InsertTextAtCursor st.KillBuffer
+
+        let private CmdReverseSearch st =
+            match st.SearchState with
+            | None ->
+                { st with SearchState = Some { MatchAt = -1; Term = ""; Direction = SearchDirection.Backward } }
+                    |> SetSearchPrompt ("")
+            | Some(search) ->
+                if search.Term = "" then
+                    match st.PreviousSearch with
+                    | None | Some("") ->
+                        st
+                    | Some(previousTerm) -> 
+                        { st with SearchState = Some { search with Term = previousTerm } }
+                            |> SetSearchPrompt previousTerm
+                            |> ReverseSearch 
+                else
+                    st |> ReverseSearch
+
+        let private CmdRefresh st =
+            Console.Clear ()
+            { st with MaxRendered = 0 }
+                |> Render
+                |> ForceCursor st.Cursor
+
+        type LineEditor (name : string option, histsize : int) =
 
             let mutable st = makeDefaultLineEditorState name histsize
 
@@ -332,433 +751,74 @@ namespace Mono.Terminal
             do 
                 handlers <-
                     [|
-                        new Handler (Command.Done, ConsoleKey.Enter,      x.CmdDone)
-                        new Handler (Command.Home,ConsoleKey.Home,       x.CmdHome)
-                        new Handler (Command.End,ConsoleKey.End,        x.CmdEnd)
-                        new Handler (Command.Left,ConsoleKey.LeftArrow,  x.CmdLeft)
-                        new Handler (Command.Right,ConsoleKey.RightArrow, x.CmdRight)
-                        new Handler (Command.HistoryPrev,ConsoleKey.UpArrow,    x.CmdHistoryPrev)
-                        new Handler (Command.HistoryNext,ConsoleKey.DownArrow,  x.CmdHistoryNext)
-                        new Handler (Command.Backspace,ConsoleKey.Backspace,  x.CmdBackspace)
-                        new Handler (Command.DeleteChar,ConsoleKey.Delete,     x.CmdDeleteChar)
-                        new Handler (Command.TabOrComplete,ConsoleKey.Tab,        x.CmdTabOrComplete)
+                        new Handler (Command.Done, ConsoleKey.Enter,      CmdDone)
+                        new Handler (Command.Home,ConsoleKey.Home,       CmdHome)
+                        new Handler (Command.End,ConsoleKey.End,        CmdEnd)
+                        new Handler (Command.Left,ConsoleKey.LeftArrow,  CmdLeft)
+                        new Handler (Command.Right,ConsoleKey.RightArrow, CmdRight)
+                        new Handler (Command.HistoryPrev,ConsoleKey.UpArrow,    CmdHistoryPrev)
+                        new Handler (Command.HistoryNext,ConsoleKey.DownArrow,  CmdHistoryNext)
+                        new Handler (Command.Backspace,ConsoleKey.Backspace,  CmdBackspace)
+                        new Handler (Command.DeleteChar,ConsoleKey.Delete,     CmdDeleteChar)
+                        new Handler (Command.TabOrComplete,ConsoleKey.Tab,        CmdTabOrComplete)
                 
                         // Emacs keys
-                        Handler.Control Command.Home 'A' (x.CmdHome)
-                        Handler.Control Command.End 'E' (x.CmdEnd)
-                        Handler.Control Command.Left 'B' (x.CmdLeft)
-                        Handler.Control Command.Right 'F' (x.CmdRight)
-                        Handler.Control Command.HistoryPrev 'P' (x.CmdHistoryPrev)
-                        Handler.Control Command.HistoryNext 'N' (x.CmdHistoryNext)
-                        Handler.Control Command.CmdKillToEOF 'K' (x.CmdKillToEOF)
-                        Handler.Control Command.Yank 'Y' (x.CmdYank)
-                        Handler.Control Command.DeleteChar 'D' (x.CmdDeleteChar)
-                        Handler.Control Command.Refresh 'L' (x.CmdRefresh)
-                        Handler.Control Command.ReverseSearch 'R' (x.CmdReverseSearch)
+                        Handler.Control Command.Home 'A' (CmdHome)
+                        Handler.Control Command.End 'E' (CmdEnd)
+                        Handler.Control Command.Left 'B' (CmdLeft)
+                        Handler.Control Command.Right 'F' (CmdRight)
+                        Handler.Control Command.HistoryPrev 'P' (CmdHistoryPrev)
+                        Handler.Control Command.HistoryNext 'N' (CmdHistoryNext)
+                        Handler.Control Command.CmdKillToEOF 'K' (CmdKillToEOF)
+                        Handler.Control Command.Yank 'Y' (CmdYank)
+                        Handler.Control Command.DeleteChar 'D' (CmdDeleteChar)
+                        Handler.Control Command.Refresh 'L' (CmdRefresh)
+                        Handler.Control Command.ReverseSearch 'R' (CmdReverseSearch)
                         
-                        Handler.Alt Command.BackwardWord 'B' ConsoleKey.B (x.CmdBackwardWord)
-                        Handler.Alt Command.ForwardWord 'F' ConsoleKey.F (x.CmdForwardWord)
+                        Handler.Alt Command.BackwardWord 'B' ConsoleKey.B (CmdBackwardWord)
+                        Handler.Alt Command.ForwardWord 'F' ConsoleKey.F (CmdForwardWord)
                 
-                        Handler.Alt Command.DeleteWord 'D' ConsoleKey.D (x.CmdDeleteWord)
-                        Handler.Alt Command.DeleteBackword ((char)8) ConsoleKey.Backspace (x.CmdDeleteBackword)
+                        Handler.Alt Command.DeleteWord 'D' ConsoleKey.D (CmdDeleteWord)
+                        Handler.Alt Command.DeleteBackword ((char)8) ConsoleKey.Backspace (CmdDeleteBackword)
                 
                         // DEBUG
                         //Handler.Control ('T', CmdDebug),
 
                         // quote
-                        Handler.Control Command.Quote 'Q' (fun () -> x.HandleChar ((Console.ReadKey (true)).KeyChar))
+                        Handler.Control Command.Quote 'Q' (fun st -> st |> HandleChar ((Console.ReadKey (true)).KeyChar))
                     |]
 
-            member private x.CmdDebug () =
-                st.History |> History.dump
-                Console.WriteLine ()
-                x.Render ()
 
-            member private x.Render () =
-                Console.Write st.ShownPrompt
-                Console.Write st.RenderedText
 
-                let max = System.Math.Max (st.RenderedText.Length + st.ShownPrompt.Length, st.MaxRendered);
-            
-                for i = st.RenderedText.Length + st.ShownPrompt.Length to st.MaxRendered - 1 do
-                    Console.Write (' ');
-                st <- { st with MaxRendered = st.ShownPrompt.Length + st.RenderedText.Length }
+    
 
-                // Write one more to ensure that we always wrap around properly if we are at the
-                // end of a line.
-                Console.Write ' '
 
-                x.UpdateHomeRow max
 
-            member private x.UpdateHomeRow screenpos = 
-                let lines = 1 + (screenpos / Console.WindowWidth);
 
-                st <- { st with HomeRow = System.Math.Max (0, Console.CursorTop - (lines - 1)) }       
 
-            member private x.RenderFrom pos =
-                let rpos = x.TextToRenderPos (pos)
-                let mutable i = rpos;
-            
-                while i < st.RenderedText.Length do
-                    Console.Write (st.RenderedText.[i])
-                    i <- i + 1
-
-                if (st.ShownPrompt.Length + st.RenderedText.Length) > st.MaxRendered then
-                    st <- { st with MaxRendered = st.ShownPrompt.Length + st.RenderedText.Length }
-                else
-                    let max_extra = st.MaxRendered - st.ShownPrompt.Length
-                    while i < max_extra do
-                        Console.Write (' ')
-                        i <- i + 1
-
-            let render (text:string) =                 
-                let renderedText = new StringBuilder()
-
-                for i = 0 to text.Length - 1 do
-                    let c = (int) text.[i];
-                    if c < 26 then
-                        if c = (int)'\t' then
-                            renderedText.Append ("    ") |> ignore
-                        else
-                            renderedText.Append ('^') |> ignore
-                            renderedText.Append ((char) (c + (int) 'A' - 1)) |> ignore
-                        
-                    else
-                       renderedText.Append ((char)c) |> ignore
-
-                renderedText.ToString()
-
-            member private x.TextToRenderPos pos =
-                let mutable p = 0;
-
-                for i = 0 to pos - 1 do
-                    let c = (int) st.Text.[i];
-                
-                    if c < 26 then
-                        if c = 9 then
-                            p <- p + 4;
-                        else
-                            p <- p + 2;
-                    else
-                        p <- p + 1
-
-                p
-            
-            member private x.TextToScreenPos pos = st.ShownPrompt.Length + x.TextToRenderPos (pos)
-
-            member private x.LineCount with get () = (st.ShownPrompt.Length + st.RenderedText.Length)/Console.WindowWidth
-
-            member private x.ForceCursor newpos = 
-                st <- { st with Cursor = newpos }
-
-                let actual_pos = st.ShownPrompt.Length + x.TextToRenderPos (st.Cursor)
-                let row = st.HomeRow + (actual_pos/Console.WindowWidth)
-                let row = if row < Console.BufferHeight then row else Console.BufferHeight-1
-                let col = actual_pos % Console.WindowWidth
-
-                Console.SetCursorPosition (col, row);
-
-            member private x.UpdateCursor newpos =
-                if st.Cursor <> newpos then
-                    x.ForceCursor newpos
-
-            member private x.InsertChar (c:char) =
-                let prev_lines = x.LineCount
-                let newText = st.Text.Insert (st.Cursor, (string)c)
-                st <- { st with Text = newText; RenderedText = render newText }
-                
-                if prev_lines <> x.LineCount then
-                    Console.SetCursorPosition (0, st.HomeRow)
-                    x.Render ()
-                    st <- { st with Cursor = st.Cursor + 1 }
-                    x.ForceCursor st.Cursor
-                else 
-                    x.RenderFrom st.Cursor
-                    st <- { st with Cursor = st.Cursor + 1 }
-                    x.ForceCursor st.Cursor
-                    x.UpdateHomeRow (x.TextToScreenPos (st.Cursor));
-
-            member private x.CmdDone () =
-                st <- { st with DoneEditing = true}
-            
-            member val TabAtStartCompletes : bool = false
-
-            member private x.CmdTabOrComplete () =
-                let mutable complete = false;
-
-                if st.AutoCompleteEvent.IsSome then
-                    if x.TabAtStartCompletes then
-                        complete <- true
-                    else 
-                        let mutable i = 0
-                        while i < st.Cursor && not complete do
-                            if not (Char.IsWhiteSpace (st.Text.[i])) then
-                                complete <- true
-
-                    if complete then
-                        let completion = st.AutoCompleteEvent.Value st.Text st.Cursor
-                        let completions = completion.Result
-                        if completions.Length <> 0 then
-                            let ncompletions = completions.Length
-                    
-                            if completions.Length = 1 then
-                                x.InsertTextAtCursor (completions.[0])
-                            else
-                                let mutable last = -1
-                                let mutable p = 0
-                                let mutable mismatch = false
-                                while p < completions.[0].Length && not mismatch do
-                                    let c = completions.[0].[p]
-                                    let mutable i = 1
-                                    while i < ncompletions && not mismatch do
-                                        if completions.[i].Length < p then mismatch <- true
-                                        if completions.[i].[p] <> c then mismatch <- true
-                                    
-                                    if not mismatch then
-                                        last <- p;
-                                        p <- p + 1
-
-                                if last <> -1 then
-                                    x.InsertTextAtCursor (completions.[0].Substring (0, last+1))
-                                
-                                Console.WriteLine ()
-                                for s in completions do
-                                    Console.Write (completion.Prefix)
-                                    Console.Write (s)
-                                    Console.Write (' ')
-                                
-                                Console.WriteLine ()
-                                x.Render ()
-                                x.ForceCursor st.Cursor
-                            
-                    else
-                        x.HandleChar ('\t')
-                else
-                    x.HandleChar ('t')
             
         
-            member private x.CmdHome () = x.UpdateCursor (0)
-            member private x.CmdEnd () = x.UpdateCursor (st.Text.Length)
-            member private x.CmdLeft () = if st.Cursor <> 0 then x.UpdateCursor (st.Cursor-1)
-
-            member private x.CmdBackwardWord () =
-                let p = x.WordBackward st.Cursor
-                if p <> -1 then x.UpdateCursor (p)
-
-            member private x.CmdForwardWord () =
-                let p = x.WordForward st.Cursor
-                if p <> -1 then x.UpdateCursor (p);
-
-            member private x.CmdRight () =
-                if (st.Cursor <> st.Text.Length) then x.UpdateCursor (st.Cursor+1);
 
 
-            member private x.RenderAfter p =
-                x.ForceCursor p
-                x.RenderFrom p
-                x.ForceCursor st.Cursor
+
+
+
+
         
-            member private x.CmdBackspace () =
-                if st.Cursor <> 0 then
-                    let newCursor = st.Cursor - 1
-                    let newText = st.Text.Remove (newCursor, 1)
-                    st <- { st with Cursor = newCursor; Text = newText; RenderedText = render newText}
-                    x.RenderAfter st.Cursor
 
-            member private x.CmdDeleteChar () =
-                // If there is no input, this behaves like EOF
-                if st.Text.Length = 0 then
-                    st <- { st with DoneEditing = true; SignalExit = true }
-                    Console.WriteLine ()
-                else if (st.Cursor <> st.Text.Length) then
-                    let newText = st.Text.Remove (st.Cursor, 1)
-                    st <- { st with Text = newText; RenderedText = render newText }
-                    x.RenderAfter st.Cursor
 
-            member private x.WordForward p =
-                let text = st.Text
 
-                if (p >= text.Length) then
-                    -1
-                else
-                    let mutable i = p;
-                    if Char.IsPunctuation (text.[p]) || Char.IsSymbol (text.[p]) || Char.IsWhiteSpace (text.[p]) then
-                        while (i < text.Length && not (Char.IsLetterOrDigit (text.[i]))) do i <- i + 1
-                        while (i < text.Length && Char.IsLetterOrDigit (text.[i])) do i <- i + 1
-                    else
-                        while (i < text.Length && Char.IsLetterOrDigit (text.[i])) do i <- i + 1
-                    
-                    if i <> p then i else -1
-            
+        
 
-            member private x.WordBackward p =
-                let text = st.Text
 
-                if p = 0 then
-                    -1
-                else if p = 1 then
-                    0
-                else
-                    let mutable i = p-1;
-            
-                    if Char.IsPunctuation (text.[i]) || Char.IsSymbol (text.[i]) || Char.IsWhiteSpace (text.[i]) then
-                        while (i >= 0 && not (Char.IsLetterOrDigit (text.[i]))) do i <- i - 1
-                        while (i >= 0 && Char.IsLetterOrDigit (text.[i])) do i <- i - 1
-                    else
-                        while (i >= 0 && Char.IsLetterOrDigit (text.[i])) do i <- i - 1
-                    
-                    i <- i + 1
-            
-                    if i <> p then i else -1
-            
+
+
+
+
+
+
        
-            member private x.CmdDeleteWord () =
-                let pos = x.WordForward st.Cursor
 
-                if pos <> -1 then
-                    let k = st.Text.Substring (st.Cursor, pos-st.Cursor)
-           
-                    let newKillBuffer = if st.LastCommand = Some(Command.DeleteWord) then st.KillBuffer + k else k
-                    let newText = st.Text.Remove (st.Cursor, pos-st.Cursor)
-                    st <- { st with KillBuffer = newKillBuffer; Text = newText; RenderedText = render newText }
-
-                    x.RenderAfter st.Cursor
-        
-            member private x.CmdDeleteBackword () =
-                let pos = x.WordBackward st.Cursor
-                if pos <> -1 then
-                    let k = st.Text.Substring (pos, st.Cursor-pos)
-            
-                    let newKillBuffer = if st.LastCommand = Some(Command.DeleteBackword) then st.KillBuffer + k else k
-                    let newText = st.Text.Remove (pos, st.Cursor-pos)
-                    st <- { st with KillBuffer = newKillBuffer; Text = newText; RenderedText = render newText }
-
-                    x.RenderAfter (pos)
-        
-            //
-            // Adds the current line to the history if needed
-            //
-            member private x.HistoryUpdateLine () =
-                let newHistory = st.History |> History.update st.Text
-                st <- { st with History = newHistory }
-        
-            member private x.CmdHistoryPrev () =
-                if History.previousAvailable st.History then
-                    x.HistoryUpdateLine ()
-                    let (newHistory, text) = History.previous st.History
-                    st <- { st with History = newHistory }
-                    x.SetText (text)
-
-            member private x.CmdHistoryNext () =
-                if History.nextAvailable st.History then
-                    let (newHistory, text) = st.History |> History.update st.Text |> History.next 
-                    st <- { st with History = newHistory }
-                    x.SetText (text)
-
-            member private x.CmdKillToEOF () =
-                let newKillBuffer = st.Text.Substring (st.Cursor, st.Text.Length-st.Cursor)
-                let newText = st.Text.Substring(0, st.Cursor)
-                st <- { st with KillBuffer = newKillBuffer; Text = newText; RenderedText = render newText }
-                
-                x.RenderAfter st.Cursor
-
-            member private x.CmdYank () =
-                x.InsertTextAtCursor st.KillBuffer
-
-
-            member private x.InsertTextAtCursor str =
-                let prev_lines = x.LineCount;
-                let newText = st.Text.Insert (st.Cursor, str)
-                st <- { st with Text = newText; RenderedText = render newText}
-                if prev_lines <> x.LineCount then
-                    Console.SetCursorPosition (0, st.HomeRow)
-                    x.Render ()
-                    st <- { st with Cursor = st.Cursor + str.Length }
-                    x.ForceCursor st.Cursor
-                else
-                    x.RenderFrom st.Cursor
-                    st <- { st with Cursor = st.Cursor + str.Length }
-                    x.ForceCursor st.Cursor
-                    x.UpdateHomeRow (x.TextToScreenPos st.Cursor)
-        
-            member private x.SetSearchPrompt s =
-                x.SetPrompt ("(reverse-i-search)`" + s + "': ")
-
-            member private x.ReverseSearch () =
-                match st.SearchState with
-                | Some(search) ->
-                    let mutable search_backward = true
-
-                    if st.Cursor = st.Text.Length then
-                        // The cursor is at the end of the string
-                        let p = st.Text.LastIndexOf (search.Term)
-                        if p <> -1 then
-                            st <- { st with SearchState = Some({ search with MatchAt = p }); Cursor = p }
-                            x.ForceCursor st.Cursor
-                            search_backward <- false
-                    else
-                        // The cursor is somewhere in the middle of the string
-                        let start = if st.Cursor = search.MatchAt then st.Cursor - 1 else st.Cursor
-                        if start <> -1 then
-                            let p = st.Text.LastIndexOf (search.Term, start)
-                            if p <> -1 then
-                                st <- { st with SearchState = Some({ search with MatchAt = p }); Cursor = p }
-                                x.ForceCursor st.Cursor
-                                search_backward <- false
-
-                    if search_backward then
-                        // Need to search backwards in history
-                        x.HistoryUpdateLine ()
-                        let (newHistory, searchResult) = History.searchBackward search.Term st.History
-                        st <- { st with History = newHistory }
-                        match searchResult with
-                        | Some(_) ->
-                            st <- { st with SearchState = Some({ search with MatchAt = -1 }) }
-                            x.SetText searchResult
-                            x.ReverseSearch ()
-                        | None -> ()
-                | None ->
-                    failwith "No search in progress"
-
-            member private x.CmdReverseSearch () =
-                match st.SearchState with
-                | None ->
-                    st <- { st with SearchState = Some { MatchAt = -1; Term = ""; Direction = SearchDirection.Backward } }
-                    x.SetSearchPrompt ("")
-                | Some(search) ->
-                    if search.Term = "" then
-                        match st.PreviousSearch with
-                        | None | Some("") ->
-                            ()
-                        | Some(previousTerm) -> 
-                            st <- { st with SearchState = Some { search with Term = previousTerm } }
-                            x.SetSearchPrompt previousTerm
-                            x.ReverseSearch ()
-                    else
-                        x.ReverseSearch ()
-
-
-            member private x.SearchAppend (c:char) search =
-                let newTerm = search.Term + (string)c
-                st <- { st with SearchState = Some { search with Term = newTerm } }
-                x.SetSearchPrompt newTerm
-
-                //
-                // If the new typed data still matches the current text, stay here
-                //
-                let mutable still_matches = false
-                if st.Cursor < st.Text.Length then
-                    let r = st.Text.Substring (st.Cursor, st.Text.Length - st.Cursor)
-                    if r.StartsWith newTerm then still_matches <- true
-                
-                if not still_matches then
-                    x.ReverseSearch ()
-       
-            member private x.CmdRefresh () =
-                Console.Clear ()
-                st <- { st with MaxRendered = 0 }
-                x.Render ()
-                x.ForceCursor st.Cursor
 
             member private x.InterruptEdit (sender:obj) (a:ConsoleCancelEventArgs) =
                 // Do not abort our program:
@@ -768,10 +828,7 @@ namespace Mono.Terminal
                 if st.EditThread <> null then
                     st.EditThread.Abort ()
 
-            member private x.HandleChar c =
-                match st.SearchState with
-                | Some(search) -> x.SearchAppend c search
-                | None -> x.InsertChar (c)
+
 
             let readKeyWithEscMeaningAlt () =
                 let key = Console.ReadKey (true)
@@ -791,10 +848,10 @@ namespace Mono.Terminal
                         let handlerKeyInfo = handler.KeyInfo;
 
                         if handlerKeyInfo.Key = newInput.Key && handlerKeyInfo.Modifiers = modifier then
-                            handler.KeyHandler ()
+                            st <- handler.KeyHandler st
                             command <- Some(handler.HandledCommand)
                         else if handlerKeyInfo.KeyChar = newInput.KeyChar && handlerKeyInfo.Key = ConsoleKey.Zoom then
-                            handler.KeyHandler ()
+                            st <- handler.KeyHandler st
                             command <- Some(handler.HandledCommand)
 
                         handler_index <- handler_index + 1
@@ -805,27 +862,11 @@ namespace Mono.Terminal
                         | ( _, Some(Command.ReverseSearch)) -> ()
                         | (Some(search), _) ->
                             st <- { st with PreviousSearch = Some(search.Term); SearchState = None}
-                            x.SetPrompt st.SpecifiedPrompt
+                            st <- st |> SetPrompt st.SpecifiedPrompt
                         | _ -> ()
                    
                     else if (newInput.KeyChar <> (char) 0) then
-                        x.HandleChar (newInput.KeyChar)
-                 
-            member private x.InitText (initial:string option) =
-                let newText = match initial with | Some(null) | None -> "" | Some(initial) -> initial
-                st <- { st with Cursor = newText.Length; Text = newText; RenderedText = render newText }
-                x.Render ()
-                x.ForceCursor st.Cursor
-
-            member private x.SetText newtext =
-                Console.SetCursorPosition (0, st.HomeRow)
-                x.InitText (newtext)
-
-            member private x.SetPrompt newprompt =
-                st <- { st with ShownPrompt = newprompt }
-                Console.SetCursorPosition (0, st.HomeRow)
-                x.Render ()
-                x.ForceCursor st.Cursor
+                        st <- st |> HandleChar (newInput.KeyChar)
        
             member public x.Edit prompt initial =
                 st <-
@@ -843,7 +884,7 @@ namespace Mono.Terminal
                 let cancelHandler = new ConsoleCancelEventHandler(x.InterruptEdit)
                 Console.CancelKeyPress.AddHandler cancelHandler
 
-                x.InitText (Some(initial))
+                st <- st |> InitText (Some(initial))
 
                 while not st.DoneEditing do
                     try
@@ -855,8 +896,8 @@ namespace Mono.Terminal
                         | Some(_) ->
                             st <- { st with SearchState = None }
                             Console.WriteLine ()
-                            x.SetPrompt (prompt)
-                            x.SetText (Some(""))
+                            st <- st |> SetPrompt (prompt)
+                            st <- st |> SetText (Some(""))
                         | None ->
                             st <- { st with DoneEditing = true; SignalExit = true}
                 
