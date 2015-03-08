@@ -292,7 +292,7 @@ namespace Mono.Terminal
                 PreviousSearch : string option
         
                 // Used to implement the Kill semantics (multiple Alt-Ds accumulate)
-                LastCommand : Command
+                LastCommand : Command option
             }
 
         let makeDefaultLineEditorState (name : string option) (histsize : int) =
@@ -311,7 +311,7 @@ namespace Mono.Terminal
                 AutoCompleteEvent = None
                 SearchState = None
                 PreviousSearch = None
-                LastCommand = new Command()
+                LastCommand = None
             }
 
         type LineEditor (name : string option, histsize : int) as x =
@@ -384,7 +384,7 @@ namespace Mono.Terminal
                 // end of a line.
                 Console.Write ' '
 
-                x.UpdateHomeRow (max)
+                x.UpdateHomeRow max
 
             member private x.UpdateHomeRow screenpos = 
                 let lines = 1 + (screenpos / Console.WindowWidth);
@@ -557,7 +557,7 @@ namespace Mono.Terminal
             member private x.CmdBackspace () =
                 if st.Cursor <> 0 then
                     let newCursor = st.Cursor - 1
-                    let newText = st.Text.Remove (st.Cursor, 1)
+                    let newText = st.Text.Remove (newCursor, 1)
                     st <- { st with Cursor = newCursor; Text = newText; RenderedText = render newText}
                     x.RenderAfter st.Cursor
 
@@ -614,7 +614,7 @@ namespace Mono.Terminal
                 if pos <> -1 then
                     let k = st.Text.Substring (st.Cursor, pos-st.Cursor)
            
-                    let newKillBuffer = if st.LastCommand = Command.DeleteWord then st.KillBuffer + k else k
+                    let newKillBuffer = if st.LastCommand = Some(Command.DeleteWord) then st.KillBuffer + k else k
                     let newText = st.Text.Remove (st.Cursor, pos-st.Cursor)
                     st <- { st with KillBuffer = newKillBuffer; Text = newText; RenderedText = render newText }
 
@@ -625,7 +625,7 @@ namespace Mono.Terminal
                 if pos <> -1 then
                     let k = st.Text.Substring (pos, st.Cursor-pos)
             
-                    let newKillBuffer = if st.LastCommand = Command.DeleteBackword then st.KillBuffer + k else k
+                    let newKillBuffer = if st.LastCommand = Some(Command.DeleteBackword) then st.KillBuffer + k else k
                     let newText = st.Text.Remove (pos, st.Cursor-pos)
                     st <- { st with KillBuffer = newKillBuffer; Text = newText; RenderedText = render newText }
 
@@ -689,8 +689,7 @@ namespace Mono.Terminal
                         // The cursor is at the end of the string
                         let p = st.Text.LastIndexOf (search.Term)
                         if p <> -1 then
-                            searchState <- Some({ search with MatchAt = p })
-                            cursor <- p
+                            st <- { st with SearchState = Some({ search with MatchAt = p }); Cursor = p }
                             x.ForceCursor st.Cursor
                             search_backward <- false
                     else
@@ -699,19 +698,18 @@ namespace Mono.Terminal
                         if start <> -1 then
                             let p = st.Text.LastIndexOf (search.Term, start)
                             if p <> -1 then
-                                searchState <- Some({ search with MatchAt = p })
-                                cursor <- p
+                                st <- { st with SearchState = Some({ search with MatchAt = p }); Cursor = p }
                                 x.ForceCursor st.Cursor
                                 search_backward <- false
 
                     if search_backward then
                         // Need to search backwards in history
                         x.HistoryUpdateLine ()
-                        let (newHistory, searchResult) = History.searchBackward search.Term state.History
-                        state <- { state with History = newHistory }
+                        let (newHistory, searchResult) = History.searchBackward search.Term st.History
+                        st <- { st with History = newHistory }
                         match searchResult with
                         | Some(_) ->
-                            searchState <- Some({ search with MatchAt = -1 })
+                            st <- { st with SearchState = Some({ search with MatchAt = -1 }) }
                             x.SetText searchResult
                             x.ReverseSearch ()
                         | None -> ()
@@ -719,17 +717,17 @@ namespace Mono.Terminal
                     failwith "No search in progress"
 
             member private x.CmdReverseSearch () =
-                match searchState with
+                match st.SearchState with
                 | None ->
-                    searchState <- Some { MatchAt = -1; Term = ""; Direction = SearchDirection.Backward}
+                    st <- { st with SearchState = Some { MatchAt = -1; Term = ""; Direction = SearchDirection.Backward } }
                     x.SetSearchPrompt ("")
                 | Some(search) ->
                     if search.Term = "" then
-                        match previousSearch with
+                        match st.PreviousSearch with
                         | None | Some("") ->
                             ()
                         | Some(previousTerm) -> 
-                            searchState <- Some { search with Term = previousTerm}
+                            st <- { st with SearchState = Some { search with Term = previousTerm } }
                             x.SetSearchPrompt previousTerm
                             x.ReverseSearch ()
                     else
@@ -738,7 +736,7 @@ namespace Mono.Terminal
 
             member private x.SearchAppend (c:char) search =
                 let newTerm = search.Term + (string)c
-                searchState <- Some { search with Term = newTerm }
+                st <- { st with SearchState = Some { search with Term = newTerm } }
                 x.SetSearchPrompt newTerm
 
                 //
@@ -754,7 +752,7 @@ namespace Mono.Terminal
        
             member private x.CmdRefresh () =
                 Console.Clear ()
-                st.MaxRendered <- 0
+                st <- { st with MaxRendered = 0 }
                 x.Render ()
                 x.ForceCursor st.Cursor
 
@@ -763,10 +761,11 @@ namespace Mono.Terminal
                 a.Cancel <- true;
 
                 // Interrupt the editor
-                edit_thread.Abort();
+                if st.EditThread <> null then
+                    st.EditThread.Abort ()
 
             member private x.HandleChar c =
-                match searchState with
+                match st.SearchState with
                 | Some(search) -> x.SearchAppend c search
                 | None -> x.InsertChar (c)
 
@@ -781,40 +780,36 @@ namespace Mono.Terminal
                 while not st.DoneEditing do
                     let (newInput, modifier) = readKeyWithEscMeaningAlt ()
                
-                    let mutable handled = false;
-                    
                     let mutable handler_index = 0
-                    while handler_index < handlers.Length && not handled do
+                    let mutable command : Command option = None
+                    while handler_index < handlers.Length && command.IsNone do
                         let handler = handlers.[handler_index]
                         let handlerKeyInfo = handler.KeyInfo;
 
                         if handlerKeyInfo.Key = newInput.Key && handlerKeyInfo.Modifiers = modifier then
-                            handled <- true
                             handler.KeyHandler ()
-                            last_command <- handler.HandledCommand
+                            command <- Some(handler.HandledCommand)
                         else if handlerKeyInfo.KeyChar = newInput.KeyChar && handlerKeyInfo.Key = ConsoleKey.Zoom then
-                            handled <- true
                             handler.KeyHandler ()
-                            last_command <- handler.HandledCommand
+                            command <- Some(handler.HandledCommand)
 
                         handler_index <- handler_index + 1
 
-                    if handled then
-                        match (searchState, last_command) with
-                        | ( _, Command.ReverseSearch) -> ()
-                        | (Some(search), _) -> 
-                            previousSearch <- Some(search.Term)
-                            searchState <- None
-                            x.SetPrompt (specified_prompt)
+                    if command.IsSome then
+                        st <- { st with LastCommand = command }
+                        match (st.SearchState, command) with
+                        | ( _, Some(Command.ReverseSearch)) -> ()
+                        | (Some(search), _) ->
+                            st <- { st with PreviousSearch = Some(search.Term); SearchState = None}
+                            x.SetPrompt st.SpecifiedPrompt
                         | _ -> ()
                    
                     else if (newInput.KeyChar <> (char) 0) then
                         x.HandleChar (newInput.KeyChar)
                  
             member private x.InitText (initial:string option) =
-                text <- match initial with | Some(initial) -> new StringBuilder (initial) | None -> new StringBuilder()
-                x.ComputeRendered ()
-                cursor <- text.Length
+                let newText = match initial with | Some(initial) -> initial | None -> ""
+                st <- { st with Cursor = newText.Length; Text = newText; RenderedText = render newText }
                 x.Render ()
                 x.ForceCursor st.Cursor
 
@@ -823,31 +818,35 @@ namespace Mono.Terminal
                 x.InitText (newtext)
 
             member private x.SetPrompt newprompt =
-                st.ShownPrompt <- newprompt
+                st <- { st with ShownPrompt = newprompt }
                 Console.SetCursorPosition (0, st.HomeRow)
                 x.Render ()
                 x.ForceCursor st.Cursor
        
             member public x.Edit prompt initial =
-                edit_thread <- Thread.CurrentThread
-                searchState <- None
+                st <-
+                    {
+                        st with
+                            EditThread = Thread.CurrentThread
+                            SearchState = None
+                            DoneEditing = false
+                            History = st.History |> History.cursorToEnd |> History.append initial
+                            MaxRendered = 0
+                            SpecifiedPrompt = prompt
+                            ShownPrompt = prompt
+                    }
+
                 let cancelHandler = new ConsoleCancelEventHandler(x.InterruptEdit)
                 Console.CancelKeyPress.AddHandler cancelHandler
-            
-                done_editing <- false
-                state <- { state with History = state.History |> History.cursorToEnd |> History.append initial }
-                st.MaxRendered <- 0
-            
-                specified_prompt <- prompt
-                st.ShownPrompt <- prompt;
+
                 x.InitText (Some(initial))
 
-                while not done_editing do
+                while not st.DoneEditing do
                     try
                         x.EditLoop ()
                     with
                     | :? ThreadAbortException ->
-                        searchState <- None
+                        st <- { st with SearchState = None }
                         Thread.ResetAbort ()
                         Console.WriteLine ()
                         x.SetPrompt (prompt)
@@ -857,18 +856,13 @@ namespace Mono.Terminal
             
                 Console.CancelKeyPress.RemoveHandler cancelHandler
 
-                if text = null then
-                    state.History |> History.save
-                    None
+                if st.Text <> "" then
+                    st <- { st with History = History.accept st.Text st.History }
                 else
-                    let result = text.ToString ()
-                    if result <> "" then
-                        state <- { state with History = History.accept result state.History }
-                    else
-                        state <- { state with History = History.removeLast state.History }
+                    st <- { st with History = History.removeLast st.History }
 
-                    Some(result)
+                Some(st.Text)
         
             member public x. SaveHistory () =
-                state.History |> History.save
+                st.History |> History.save
                 
