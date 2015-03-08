@@ -11,9 +11,12 @@ namespace Mono.Terminal
         [<EntryPoint>]
         let main argv = 
             let le = new LineEditor("foo")
-            let mutable s = ""
-            while s <> null do
+            let mutable s = Some("")
+            while s.IsSome do
                 s <- le.Edit "shell> " ""
-                if s <> null then Console.WriteLine ("----> [{0}]", s);
+
+                match s with
+                | Some(s) -> Console.WriteLine ("----> [{0}]", s);
+                | None -> ()
 
             0

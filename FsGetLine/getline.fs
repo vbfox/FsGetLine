@@ -58,6 +58,10 @@ namespace Mono.Terminal
             | Quote = 18
             | CmdKillToEOF = 19
 
+        type SearchDirection =
+            | Forward = 1
+            | Backward = 2
+
         type Handler(cmd : Command, cki : ConsoleKeyInfo, h : KeyHandler) =
             member val HandledCommand = cmd
             member val CKI = cki
@@ -230,7 +234,7 @@ namespace Mono.Terminal
             let mutable last_search : string = null
 
             // whether we are searching (-1= reverse; 0 = no; 1 = forward)
-            let mutable searching : int = 0
+            let mutable searching : SearchDirection option = None
 
             // The position where we found the match.
             let mutable match_at : int = 0
@@ -642,13 +646,14 @@ namespace Mono.Terminal
 
         
             member private x.CmdReverseSearch () =
-                if searching = 0 then
+                match searching with
+                | None ->
                     match_at <- -1
                     last_search <- search
-                    searching <- -1
+                    searching <- Some(SearchDirection.Backward)
                     search <- ""
                     x.SetSearchPrompt ("")
-                else
+                | Some(_) ->
                     if search = "" then
                         if last_search <> "" && last_search <> null then
                             search <- last_search
@@ -688,11 +693,9 @@ namespace Mono.Terminal
                 edit_thread.Abort();
 
             member private x.HandleChar c =
-                if searching <> 0 then
-                    x.SearchAppend (c)
-                else
-                    x.InsertChar (c)
-
+                match searching with
+                | Some(_) -> x.SearchAppend (c)
+                | None -> x.InsertChar (c)
 
             member private x.EditLoop () =
                 let mutable cki : ConsoleKeyInfo = new ConsoleKeyInfo()
@@ -727,11 +730,13 @@ namespace Mono.Terminal
                         handler_index <- handler_index + 1
 
                     if handled then
-                        if searching <> 0 then
-                            if last_command <> Command.ReverseSearch then
-                                searching <- 0
-                                x.SetPrompt (specified_prompt)
-                    
+                        match (searching, last_command) with
+                        | ( _, Command.ReverseSearch) -> ()
+                        | (Some(_), _) -> 
+                            searching <- None
+                            x.SetPrompt (specified_prompt)
+                        | _ -> ()
+                   
                     else if (cki.KeyChar <> (char) 0) then
                         x.HandleChar (cki.KeyChar)
                  
@@ -751,11 +756,10 @@ namespace Mono.Terminal
                 Console.SetCursorPosition (0, home_row)
                 x.Render ()
                 x.ForceCursor (cursor)
-
        
             member public x.Edit prompt initial =
                 edit_thread <- Thread.CurrentThread;
-                searching <- 0;
+                searching <- None;
                 let cancelHandler = new ConsoleCancelEventHandler(x.InterruptEdit)
                 Console.CancelKeyPress.AddHandler cancelHandler
             
@@ -773,7 +777,7 @@ namespace Mono.Terminal
                         x.EditLoop ()
                     with
                     | :? ThreadAbortException ->
-                        searching <- 0;
+                        searching <- None
                         Thread.ResetAbort ()
                         Console.WriteLine ()
                         x.SetPrompt (prompt)
@@ -785,7 +789,7 @@ namespace Mono.Terminal
 
                 if text = null then
                     history.Close ()
-                    null
+                    None
                 else
                     let result = text.ToString ()
                     if result <> "" then
@@ -793,7 +797,7 @@ namespace Mono.Terminal
                     else
                         history.RemoveLast ()
 
-                    result
+                    Some(result)
         
             member public x. SaveHistory () =
                 history.Close ()
