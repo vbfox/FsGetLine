@@ -62,13 +62,13 @@ namespace Mono.Terminal
             | Forward = 1
             | Backward = 2
 
-        type Handler(cmd : Command, cki : ConsoleKeyInfo, h : KeyHandler) =
+        type Handler(cmd : Command, cki : ConsoleKeyInfo, h : unit -> unit) =
             member val HandledCommand = cmd
             member val CKI = cki
             member val KeyHandler = h
 
-            new(cmd : Command, key, h : KeyHandler) = Handler(cmd, new ConsoleKeyInfo((char) 0, key, false, false, false), h)
-            new(cmd : Command, c, h : KeyHandler) = Handler(cmd, new ConsoleKeyInfo (c, ConsoleKey.Zoom, false, false, false), h)
+            new(cmd : Command, key, h : unit -> unit) = Handler(cmd, new ConsoleKeyInfo((char) 0, key, false, false, false), h)
+            new(cmd : Command, c, h : unit -> unit) = Handler(cmd, new ConsoleKeyInfo (c, ConsoleKey.Zoom, false, false, false), h)
             
             static member Alt cmd c k h = Handler (cmd, new ConsoleKeyInfo (c, k, false, true, false), h)
             static member Control cmd (c : char) h = Handler (cmd, (char) ((int)c - (int)'A' + 1), h)
@@ -253,41 +253,41 @@ namespace Mono.Terminal
             do 
                 handlers <-
                     [|
-                        new Handler (Command.Done, ConsoleKey.Enter,      new KeyHandler(x.CmdDone))
-                        new Handler (Command.Home,ConsoleKey.Home,       new KeyHandler(x.CmdHome))
-                        new Handler (Command.End,ConsoleKey.End,        new KeyHandler(x.CmdEnd))
-                        new Handler (Command.Left,ConsoleKey.LeftArrow,  new KeyHandler(x.CmdLeft))
-                        new Handler (Command.Right,ConsoleKey.RightArrow, new KeyHandler(x.CmdRight))
-                        new Handler (Command.HistoryPrev,ConsoleKey.UpArrow,    new KeyHandler(x.CmdHistoryPrev))
-                        new Handler (Command.HistoryNext,ConsoleKey.DownArrow,  new KeyHandler(x.CmdHistoryNext))
-                        new Handler (Command.Backspace,ConsoleKey.Backspace,  new KeyHandler(x.CmdBackspace))
-                        new Handler (Command.DeleteChar,ConsoleKey.Delete,     new KeyHandler(x.CmdDeleteChar))
-                        new Handler (Command.TabOrComplete,ConsoleKey.Tab,        new KeyHandler(x.CmdTabOrComplete))
+                        new Handler (Command.Done, ConsoleKey.Enter,      x.CmdDone)
+                        new Handler (Command.Home,ConsoleKey.Home,       x.CmdHome)
+                        new Handler (Command.End,ConsoleKey.End,        x.CmdEnd)
+                        new Handler (Command.Left,ConsoleKey.LeftArrow,  x.CmdLeft)
+                        new Handler (Command.Right,ConsoleKey.RightArrow, x.CmdRight)
+                        new Handler (Command.HistoryPrev,ConsoleKey.UpArrow,    x.CmdHistoryPrev)
+                        new Handler (Command.HistoryNext,ConsoleKey.DownArrow,  x.CmdHistoryNext)
+                        new Handler (Command.Backspace,ConsoleKey.Backspace,  x.CmdBackspace)
+                        new Handler (Command.DeleteChar,ConsoleKey.Delete,     x.CmdDeleteChar)
+                        new Handler (Command.TabOrComplete,ConsoleKey.Tab,        x.CmdTabOrComplete)
                 
                         // Emacs keys
-                        Handler.Control Command.Home 'A' (new KeyHandler(x.CmdHome))
-                        Handler.Control Command.End 'E' (new KeyHandler(x.CmdEnd))
-                        Handler.Control Command.Left 'B' (new KeyHandler(x.CmdLeft))
-                        Handler.Control Command.Right 'F' (new KeyHandler(x.CmdRight))
-                        Handler.Control Command.HistoryPrev 'P' (new KeyHandler(x.CmdHistoryPrev))
-                        Handler.Control Command.HistoryNext 'N' (new KeyHandler(x.CmdHistoryNext))
-                        Handler.Control Command.CmdKillToEOF 'K' (new KeyHandler(x.CmdKillToEOF))
-                        Handler.Control Command.Yank 'Y' (new KeyHandler(x.CmdYank))
-                        Handler.Control Command.DeleteChar 'D' (new KeyHandler(x.CmdDeleteChar))
-                        Handler.Control Command.Refresh 'L' (new KeyHandler(x.CmdRefresh))
-                        Handler.Control Command.ReverseSearch 'R' (new KeyHandler(x.CmdReverseSearch))
+                        Handler.Control Command.Home 'A' (x.CmdHome)
+                        Handler.Control Command.End 'E' (x.CmdEnd)
+                        Handler.Control Command.Left 'B' (x.CmdLeft)
+                        Handler.Control Command.Right 'F' (x.CmdRight)
+                        Handler.Control Command.HistoryPrev 'P' (x.CmdHistoryPrev)
+                        Handler.Control Command.HistoryNext 'N' (x.CmdHistoryNext)
+                        Handler.Control Command.CmdKillToEOF 'K' (x.CmdKillToEOF)
+                        Handler.Control Command.Yank 'Y' (x.CmdYank)
+                        Handler.Control Command.DeleteChar 'D' (x.CmdDeleteChar)
+                        Handler.Control Command.Refresh 'L' (x.CmdRefresh)
+                        Handler.Control Command.ReverseSearch 'R' (x.CmdReverseSearch)
                         
-                        Handler.Alt Command.BackwardWord 'B' ConsoleKey.B (new KeyHandler(x.CmdBackwardWord))
-                        Handler.Alt Command.ForwardWord 'F' ConsoleKey.F (new KeyHandler(x.CmdForwardWord))
+                        Handler.Alt Command.BackwardWord 'B' ConsoleKey.B (x.CmdBackwardWord)
+                        Handler.Alt Command.ForwardWord 'F' ConsoleKey.F (x.CmdForwardWord)
                 
-                        Handler.Alt Command.DeleteWord 'D' ConsoleKey.D (new KeyHandler(x.CmdDeleteWord))
-                        Handler.Alt Command.DeleteBackword ((char)8) ConsoleKey.Backspace (new KeyHandler(x.CmdDeleteBackword))
+                        Handler.Alt Command.DeleteWord 'D' ConsoleKey.D (x.CmdDeleteWord)
+                        Handler.Alt Command.DeleteBackword ((char)8) ConsoleKey.Backspace (x.CmdDeleteBackword)
                 
                         // DEBUG
                         //Handler.Control ('T', CmdDebug),
 
                         // quote
-                        Handler.Control Command.Quote 'Q' (new KeyHandler (fun () -> x.HandleChar ((Console.ReadKey (true)).KeyChar)))
+                        Handler.Control Command.Quote 'Q' (fun () -> x.HandleChar ((Console.ReadKey (true)).KeyChar))
                         
                     |]
 
@@ -720,11 +720,11 @@ namespace Mono.Terminal
 
                         if t.Key = cki.Key && t.Modifiers = modifier then
                             handled <- true
-                            handler.KeyHandler.Invoke ()
+                            handler.KeyHandler ()
                             last_command <- handler.HandledCommand
                         else if t.KeyChar = cki.KeyChar && t.Key = ConsoleKey.Zoom then
                             handled <- true
-                            handler.KeyHandler.Invoke()
+                            handler.KeyHandler ()
                             last_command <- handler.HandledCommand
 
                         handler_index <- handler_index + 1
