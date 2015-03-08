@@ -737,14 +737,12 @@ namespace Mono.Terminal
                 |> Render
                 |> ForceCursor st.Cursor
 
-        type LineEditor (name : string option, histsize : int) =
+        type LineEditor () =
 
             [<DefaultValue>]
             val mutable public xx_sharp_is_annoying : string
 
             let mutable handlers : Handler array = Array.zeroCreate 0
-
-            new(name) = LineEditor(name, 10)
 
             do 
                 handlers <-
