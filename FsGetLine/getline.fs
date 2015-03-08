@@ -293,7 +293,7 @@ namespace Mono.Terminal
                 TabAtStartCompletes : bool
             }
 
-        let makeDefaultLineEditorState (name : string option) (histsize : int) =
+        let makeDefaultLineEditorState (globalState : LineEditorGlobalState) =
             {
                 Text = ""
                 RenderedText = ""
@@ -305,13 +305,13 @@ namespace Mono.Terminal
                 DoneEditing = false
                 SignalExit = false
                 EditThread = null
-                History = History.empty name histsize
-                KillBuffer = ""
-                AutoCompleteEvent = None
+                History = globalState.History
+                KillBuffer = globalState.KillBuffer
+                AutoCompleteEvent = globalState.AutoCompleteEvent
                 SearchState = None
                 PreviousSearch = None
                 LastCommand = None
-                TabAtStartCompletes = true
+                TabAtStartCompletes = globalState.TabAtStartCompletes
             }
 
         type KeyHandler = LineEditorState -> LineEditorState
@@ -739,8 +739,6 @@ namespace Mono.Terminal
 
         type LineEditor (name : string option, histsize : int) =
 
-            let mutable st = makeDefaultLineEditorState name histsize
-
             [<DefaultValue>]
             val mutable public xx_sharp_is_annoying : string
 
@@ -788,47 +786,12 @@ namespace Mono.Terminal
                         Handler.Control Command.Quote 'Q' (fun st -> st |> HandleChar ((Console.ReadKey (true)).KeyChar))
                     |]
 
-
-
-    
-
-
-
-
-
-            
-        
-
-
-
-
-
-
-        
-
-
-
-        
-
-
-
-
-
-
-
-
-       
-
-
-            member private x.InterruptEdit (sender:obj) (a:ConsoleCancelEventArgs) =
+            let interruptEdit (thread:Thread) (sender:obj) (a:ConsoleCancelEventArgs) =
                 // Do not abort our program:
                 a.Cancel <- true;
 
                 // Interrupt the editor
-                if st.EditThread <> null then
-                    st.EditThread.Abort ()
-
-
+                thread.Abort ()
 
             let readKeyWithEscMeaningAlt () =
                 let key = Console.ReadKey (true)
@@ -837,38 +800,35 @@ namespace Mono.Terminal
                 else
                     (key, key.Modifiers)
 
-            member private x.EditLoop () =
-                while not st.DoneEditing do
-                    let (newInput, modifier) = readKeyWithEscMeaningAlt ()
-               
-                    let mutable handler_index = 0
-                    let mutable command : Command option = None
-                    while handler_index < handlers.Length && command.IsNone do
-                        let handler = handlers.[handler_index]
+            let tryFindHandler (input:ConsoleKeyInfo) modifier =
+                handlers |> Array.tryFind (fun handler ->
                         let handlerKeyInfo = handler.KeyInfo;
 
-                        if handlerKeyInfo.Key = newInput.Key && handlerKeyInfo.Modifiers = modifier then
-                            st <- handler.KeyHandler st
-                            command <- Some(handler.HandledCommand)
-                        else if handlerKeyInfo.KeyChar = newInput.KeyChar && handlerKeyInfo.Key = ConsoleKey.Zoom then
-                            st <- handler.KeyHandler st
-                            command <- Some(handler.HandledCommand)
+                        (handlerKeyInfo.Key = input.Key && handlerKeyInfo.Modifiers = modifier)
+                            || (handlerKeyInfo.KeyChar = input.KeyChar && handlerKeyInfo.Key = ConsoleKey.Zoom)
+                    )
 
-                        handler_index <- handler_index + 1
+            let readOneInput st =
+                let (newInput, modifier) = readKeyWithEscMeaningAlt ()
+               
+                let inputHander = tryFindHandler newInput modifier
 
-                    if command.IsSome then
-                        st <- { st with LastCommand = command }
-                        match (st.SearchState, command) with
-                        | ( _, Some(Command.ReverseSearch)) -> ()
-                        | (Some(search), _) ->
-                            st <- { st with PreviousSearch = Some(search.Term); SearchState = None}
-                            st <- st |> SetPrompt st.SpecifiedPrompt
-                        | _ -> ()
-                   
-                    else if (newInput.KeyChar <> (char) 0) then
-                        st <- st |> HandleChar (newInput.KeyChar)
+                match inputHander with
+                | Some(handler) -> 
+                    let st = handler.KeyHandler st
+                    let st = { st with LastCommand = Some(handler.HandledCommand) }
+                    match (st.SearchState, handler.HandledCommand) with
+                    | ( _, Command.ReverseSearch) -> st
+                    | (Some(search), _) -> { st with PreviousSearch = Some(search.Term); SearchState = None} |> SetPrompt st.SpecifiedPrompt
+                    | _ -> st
+                | None -> st |> HandleChar (newInput.KeyChar)
+
+            let rec readInputUntilDoneEditing = function
+                | st when st.DoneEditing -> st
+                | st -> st |> readOneInput |> readInputUntilDoneEditing
        
-            member public x.Edit prompt initial =
+            member public x.Edit prompt initial globalState =
+                let mutable st = makeDefaultLineEditorState globalState
                 st <-
                     {
                         st with
@@ -881,14 +841,14 @@ namespace Mono.Terminal
                             ShownPrompt = prompt
                     }
 
-                let cancelHandler = new ConsoleCancelEventHandler(x.InterruptEdit)
+                let cancelHandler = new ConsoleCancelEventHandler(interruptEdit Thread.CurrentThread)
                 Console.CancelKeyPress.AddHandler cancelHandler
 
                 st <- st |> InitText (Some(initial))
 
                 while not st.DoneEditing do
                     try
-                        x.EditLoop ()
+                        st <- readInputUntilDoneEditing st
                     with
                     | :? ThreadAbortException ->
                         Thread.ResetAbort ()
@@ -905,17 +865,15 @@ namespace Mono.Terminal
             
                 Console.CancelKeyPress.RemoveHandler cancelHandler
 
+                let globalState = { globalState with History = st.History; KillBuffer = st.KillBuffer }
+
                 if st.SignalExit then
                     st.History |> History.save
-                    None
+                    (globalState, None)
                 else
                     if st.Text <> "" then
                         st <- { st with History = History.accept st.Text st.History }
                     else
                         st <- { st with History = History.removeLast st.History }
 
-                    Some(st.Text)
-        
-            member public x.SaveHistory () =
-                st.History |> History.save
-                
+                    (globalState, Some(st.Text))
