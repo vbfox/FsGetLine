@@ -3,7 +3,7 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio 14
 VisualStudioVersion = 14.0.22310.1
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "FsGetLine", "FsGetLine\FsGetLine.fsproj", "{0C7D83B5-FB9B-4343-8A92-003FA20D60E3}"
+Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "FsGetLine", "FsGetLine.fsproj", "{0C7D83B5-FB9B-4343-8A92-003FA20D60E3}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
