@@ -35,7 +35,6 @@ namespace Mono.Terminal
 
         type Completion = { Result : string list; Prefix : string }
         type AutoCompleteHandler = delegate of string * int -> Completion
-        type KeyHandler = delegate of unit -> unit
 
         type Command =
             | Done = 1
