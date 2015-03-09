@@ -437,13 +437,12 @@ namespace BlackFox
             
             for i = st.RenderedText.Length + promptLen to st.MaxRendered - 1 do
                 Console.Write (' ');
-            let st = { st with MaxRendered = promptLen + st.RenderedText.Length }
 
             // Write one more to ensure that we always wrap around properly if we are at the
             // end of a line.
             Console.Write ' '
 
-            st |> UpdateHomeRow max
+            { st with MaxRendered = promptLen + st.RenderedText.Length } |> UpdateHomeRow max
 
         let private CmdDebug st =
             st.History |> History.dump
