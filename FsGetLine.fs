@@ -145,6 +145,7 @@ namespace BlackFox
 
             let dump history =
                 printf "Head=%i Tail=%i Cursor=%i count=%i" history.Head history.Tail history.Cursor history.Count
+                
                 for i = 0 to history.Length - 1 do
                     let cursorIndicator = if i = history.Cursor then "==>" else "   "
                     printf " %s %i: %s" cursorIndicator i history.Lines.[i]
@@ -379,26 +380,19 @@ namespace BlackFox
         let private CmdDone st = { st with DoneEditing = true}
 
         let private TextToRenderPos pos (text:string) =
-            let mutable p = 0;
+            let foldFunc state (c:char) = 
+                match (int)c with
+                | c when c = 9 -> state + 4
+                | c when c < 23 -> state + 2
+                | _ -> state + 1
 
-            for i = 0 to pos - 1 do
-                let c = (int) text.[i];
-                
-                if c < 26 then
-                    if c = 9 then
-                        p <- p + 4;
-                    else
-                        p <- p + 2;
-                else
-                    p <- p + 1
-
-            p
+            text |> Seq.take pos |> Seq.fold foldFunc 0 
             
         let private promptLen st = st.ShownPrompt.Length + st.ShownPromptDisplay.ExtraChars
 
         let private TextToScreenPos pos st = (promptLen st) + (TextToRenderPos pos st.Text)
 
-        let private LineCount st = ((promptLen st) + st.RenderedText.Length)/Console.WindowWidth
+        let private LineCount st = ((promptLen st) + st.RenderedText.Length) / Console.WindowWidth
 
         let private ForceCursor newpos st = 
             let actual_pos = (promptLen st) + (TextToRenderPos newpos st.Text)
