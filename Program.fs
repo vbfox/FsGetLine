@@ -2,6 +2,7 @@
 
     module GetLineTestApp =
         open System
+        open FsGetLine.ColoredString
 
         [<EntryPoint>]
         let main argv = 
@@ -20,7 +21,7 @@
                 })
             let mutable s = Some("")
             while s.IsSome do
-                let (newEditor, line) = editor |> FsGetLine.get "F#" ""
+                let (newEditor, line) = editor |> FsGetLine.get (ColoredString "^[Cyan]F#^[DarkGray] > ") ""
                 editor <- newEditor
                 s <- line
                 

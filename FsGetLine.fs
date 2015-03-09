@@ -32,36 +32,6 @@ namespace BlackFox
         open System.Threading
         open System.Reflection
 
-        type Completion = { Result : string list; Prefix : string }
-        type AutoCompleteHandler = string -> int -> Completion
-
-        type Command =
-            | Done = 1
-            | Home = 2
-            | End = 3
-            | Left = 4
-            | Right = 5
-            | HistoryPrev = 6
-            | HistoryNext = 7
-            | Backspace = 8
-            | TabOrComplete = 9
-            | Yank = 10
-            | DeleteChar = 11
-            | Refresh = 12
-            | ReverseSearch = 13
-            | BackwardWord = 14
-            | ForwardWord = 15
-            | DeleteWord = 16
-            | DeleteBackword = 17
-            | Quote = 18
-            | CmdKillToEOF = 19
-
-        type SearchDirection =
-            | Forward = 1
-            | Backward = 2
-
-
-
         /// Emulates the bash-like behavior, where edits done to the
         /// history are recorded
         module History =
@@ -209,11 +179,165 @@ namespace BlackFox
                         sw.WriteLine history.Lines.[p]
                 | None -> ()
 
-        type PromptDisplay =
-            {
-                Show : string -> unit
-                ExtraChars : int
-            }
+        /// Handle the display of ANSI C0 control characters by prefixing them with "^"
+        module private AnsiControlCodes =
+            let public (|CanEscape|NoEscape|) (c : char) = if (int)c < 31 then CanEscape else NoEscape
+            let public toDisplayableChar c = (char) ((int)c + (int) 'A' - 1)
+
+            let public fold (onNormal:'st -> char -> 'st) (onEscape:'st -> char -> 'st) (st:'st) (s:string) =
+                let foldFunc st c =
+                    match c with
+                    | CanEscape -> onEscape st c
+                    | _ -> onNormal st c
+
+                s |> Seq.fold foldFunc st
+
+            let public escapeChar c = 
+                match c with
+                | CanEscape -> "^" + (string)(toDisplayableChar c)
+                | c -> (string)c
+
+        module ColoredString =
+            open System
+            open System.Text
+
+            type private ColorIdentifier =
+                | NoColor
+                | Reset
+                | Color of color : ConsoleColor
+
+            type private onCharParsed<'st> = 'st -> char -> 'st
+            type private onColorParsed<'st> = 'st -> ColorIdentifier * ColorIdentifier -> 'st
+
+            let private tryParseColor (s:string) =
+                if s.ToLower () = "reset" then
+                    Reset
+                else
+                    try
+                        Color(Enum.Parse(typedefof<ConsoleColor>, s) :?> ConsoleColor)
+                    with
+                    | :? ArgumentException -> NoColor
+                    | :? OverflowException -> NoColor
+
+            let private parseColorCodes (s:string) =
+                let split = s.Split(';')
+
+                let foreground = if split.Length >= 1 then tryParseColor split.[0] else NoColor
+                let background = if split.Length >= 2 then tryParseColor split.[1] else NoColor
+
+                (foreground, background)
+
+            /// Support color markers in strings like ^[Red] or ^[Red;Blue] where the first color is
+            /// the foreground and the second the background.
+            /// Color names are the string values of ConsoleColors and the special value 'Reset' set
+            /// the corresponding color to the one that was present when the display started.
+            type ColoredString(raw : string) =
+                member val Raw = raw
+
+                static member public EscapeToString (s:string) =
+                    s.Replace("^", "^^")
+
+                static member public Escape (s:string) =
+                    new ColoredString(ColoredString.EscapeToString(s))
+
+                member private x.fold (onChar: onCharParsed<'st>) (onColor: onColorParsed<'st>) (st:'st) = 
+                    let foldFunc (st, escCount, content) c =
+                        match escCount with
+                        | 0 ->
+                            match c with
+                            | '^' -> (st, 1, "")
+                            | _ -> (onChar st c, 0, "")
+                        | 1 ->
+                            match c with
+                            | '[' -> (st, 2, "")
+                            | _ -> (onChar st c, 0, "")
+                        | 2 ->
+                            match c with
+                            | ']' -> (onColor st (parseColorCodes content), 0, "")
+                            | _ -> (st, 2, content + (string)c)
+                        | _ ->
+                            failwith("Impossible escape count")
+
+                    let (newSt, _, _) = raw |> Seq.fold foldFunc (st, 0, "")
+                    newSt
+
+                member x.Length
+                    with get () = x.fold (fun x _ -> x + 1) (fun x _ -> x) 0
+
+                override x.ToString () =
+                    let builder = x.fold (fun (b:StringBuilder) c -> b.Append c) (fun b _ -> b) (new StringBuilder())
+                    builder.ToString()
+
+                member private x.WriteCore (inner: (ColorIdentifier -> ColorIdentifier -> unit) -> unit) =
+                    let initalForeground = Console.ForegroundColor
+                    let initialBackground = Console.BackgroundColor
+
+                    let setForeground = function
+                        | NoColor -> ()
+                        | Reset -> Console.ForegroundColor <- initalForeground
+                        | Color color -> Console.ForegroundColor <-  color
+
+                    let setBackground = function
+                        | NoColor -> ()
+                        | Reset -> Console.BackgroundColor <- initialBackground
+                        | Color color -> Console.BackgroundColor <-  color
+
+                    let setColors foreground background =
+                        setForeground foreground
+                        setBackground background
+                        
+                    inner setColors
+
+                    setColors Reset Reset
+
+                member x.WriteToConsole () =
+                    x.WriteCore (fun setColors ->
+                        x.fold (fun _ c -> Console.Write(c)) (fun _ (foreground, background) -> setColors foreground background) ()
+                        )
+
+                member x.WriteToConsoleFrom from =
+                    x.WriteCore (fun setColors ->
+                        let writeChar i (c:char) =
+                            if i < from then
+                                i + 1
+                            else
+                                Console.Write c
+                                i + 1
+                        let setColors' i (foreground, background) =
+                            setColors foreground background
+                            i
+                        x.fold writeChar setColors' 0 |> ignore
+                        )
+
+        open ColoredString
+
+        type Completion = { Result : string list; Prefix : string }
+        type AutoCompleteHandler = string -> int -> Completion
+
+        type Command =
+            | Done = 1
+            | Home = 2
+            | End = 3
+            | Left = 4
+            | Right = 5
+            | HistoryPrev = 6
+            | HistoryNext = 7
+            | Backspace = 8
+            | TabOrComplete = 9
+            | Yank = 10
+            | DeleteChar = 11
+            | Refresh = 12
+            | ReverseSearch = 13
+            | BackwardWord = 14
+            | ForwardWord = 15
+            | DeleteWord = 16
+            | DeleteBackword = 17
+            | Quote = 18
+            | CmdKillToEOF = 19
+
+        type SearchDirection =
+            | Forward = 1
+            | Backward = 2
 
         type GetLineSettings =
             {
@@ -225,33 +349,7 @@ namespace BlackFox
                 AutoCompleteEvent : AutoCompleteHandler option
 
                 TabAtStartCompletes : bool
-
-                PromptDisplay : PromptDisplay
-
-                SearchPromptDisplay : PromptDisplay
             }
-
-        let private defaultPromptDisplay (s:string) =
-            let previousColor = Console.ForegroundColor
-            Console.ForegroundColor <- ConsoleColor.Cyan
-            Console.Write(s)
-            Console.ForegroundColor <- ConsoleColor.DarkGray
-            Console.Write(" > " )
-            Console.ForegroundColor <- previousColor
-
-        let private defaultSearchPromptDisplay (s:string) =
-            let previousColor = Console.ForegroundColor
-            Console.ForegroundColor <- ConsoleColor.DarkGray
-            Console.Write("(")
-            Console.ForegroundColor <- ConsoleColor.Cyan
-            Console.Write("reverse-i-search")
-            Console.ForegroundColor <- ConsoleColor.DarkGray
-            Console.Write(")`")
-            Console.ForegroundColor <- previousColor
-            Console.Write(s)
-            Console.ForegroundColor <- ConsoleColor.DarkGray
-            Console.Write("': ")
-            Console.ForegroundColor <- previousColor
 
         let private defaultSettings = 
             {
@@ -259,8 +357,6 @@ namespace BlackFox
                 HistorySize = 10
                 AutoCompleteEvent = None
                 TabAtStartCompletes = true
-                PromptDisplay = { Show = defaultPromptDisplay; ExtraChars = " > ".Length }
-                SearchPromptDisplay = { Show = defaultSearchPromptDisplay; ExtraChars = "(reverse-i-search)`': ".Length }
             }
 
         type GetLine =
@@ -300,14 +396,13 @@ namespace BlackFox
                 Text : string
 
                 /// The text as it is rendered (replaces (char)1 with ^A on display for example).
-                RenderedText : string
+                RenderedText : ColoredString
 
                 /// The prompt specified
-                SpecifiedPrompt : string
+                SpecifiedPrompt : ColoredString
 
                 /// The prompt shown to the user.
-                ShownPrompt : string
-                ShownPromptDisplay : PromptDisplay
+                ShownPrompt : ColoredString
 
                 /// The current cursor position, indexes into "text", for an index
                 /// into st.RenderedText, use TextToRenderPos
@@ -346,10 +441,9 @@ namespace BlackFox
         let private makeDefaultLineEditorState (globalState : GetLine) =
             {
                 Text = ""
-                RenderedText = ""
-                SpecifiedPrompt = ""
-                ShownPrompt = ""
-                ShownPromptDisplay = globalState.Settings.PromptDisplay
+                RenderedText = ColoredString ""
+                SpecifiedPrompt = ColoredString ""
+                ShownPrompt = ColoredString ""
                 Cursor = 0
                 HomeRow = 0
                 MaxRendered = 0
@@ -380,25 +474,20 @@ namespace BlackFox
         let private CmdDone st = { st with DoneEditing = true}
 
         let private (|IsTab|IsNotTab|) c = if c = '\t' then IsTab else IsNotTab
-        let private (|NeedEscape|NeedNoEscape|) c = if c <> '\t' && (int)c < 26 then NeedEscape else NeedNoEscape
 
         let private TextToRenderPos pos (text:string) =
-            let foldFunc state c = 
-                match c with
-                | IsTab -> state + 4
-                | NeedEscape -> state + 2
-                | _ -> state + 1
-
-            text |> Seq.take pos |> Seq.fold foldFunc 0 
+            text.Substring(0, pos)
+                |> AnsiControlCodes.fold
+                    (fun st c -> st + (if c = '\t' then 4 else 1))
+                    (fun st c -> st + 2)
+                    0
             
-        let private promptLen st = st.ShownPrompt.Length + st.ShownPromptDisplay.ExtraChars
+        let private TextToScreenPos pos st = st.ShownPrompt.Length + (TextToRenderPos pos st.Text)
 
-        let private TextToScreenPos pos st = (promptLen st) + (TextToRenderPos pos st.Text)
-
-        let private LineCount st = ((promptLen st) + st.RenderedText.Length) / Console.WindowWidth
+        let private LineCount st = (st.ShownPrompt.Length + st.RenderedText.Length) / Console.WindowWidth
 
         let private ForceCursor newpos st = 
-            let actual_pos = (promptLen st) + (TextToRenderPos newpos st.Text)
+            let actual_pos = st.ShownPrompt.Length + (TextToRenderPos newpos st.Text)
             let row = st.HomeRow + (actual_pos/Console.WindowWidth)
             let row = if row < Console.BufferHeight then row else Console.BufferHeight-1
             let col = actual_pos % Console.WindowWidth
@@ -414,14 +503,16 @@ namespace BlackFox
                 st
 
         let private render (text:string) =
-            let foldFunc (state:StringBuilder) c = 
-                match c with
-                | IsTab -> state.Append ("    ")
-                | NeedEscape -> (state.Append ('^')).Append ((char) ((int)c + (int) 'A' - 1))
-                | _ -> state.Append c
+            let builder = text |> AnsiControlCodes.fold
+                            (fun (b:StringBuilder) c ->
+                                if c = '\t' then
+                                    b.Append("    ")
+                                else
+                                    b.Append(ColoredString.EscapeToString((string)c)))
+                            (fun b c -> b.Append(sprintf "^[DarkGreen]^^^[Green]%c^[Reset]" (AnsiControlCodes.toDisplayableChar c)))
+                            (new StringBuilder())
 
-            let builder = text |> Seq.fold foldFunc (new StringBuilder())
-            builder.ToString()
+            ColoredString(builder.ToString())
 
         let private UpdateHomeRow screenpos st = 
             let lines = 1 + (screenpos / Console.WindowWidth);
@@ -429,20 +520,19 @@ namespace BlackFox
             { st with HomeRow = System.Math.Max (0, Console.CursorTop - (lines - 1)) }
 
         let private Render st =
-            st.ShownPromptDisplay.Show st.ShownPrompt
-            let promptLen = st |> promptLen
-            Console.Write st.RenderedText
+            st.ShownPrompt.WriteToConsole ()
+            st.RenderedText.WriteToConsole()
 
-            let max = System.Math.Max (st.RenderedText.Length + promptLen, st.MaxRendered);
+            let max = System.Math.Max (st.RenderedText.Length + st.ShownPrompt.Length, st.MaxRendered);
             
-            for i = st.RenderedText.Length + promptLen to st.MaxRendered - 1 do
+            for i = st.RenderedText.Length + st.ShownPrompt.Length to st.MaxRendered - 1 do
                 Console.Write (' ');
 
             // Write one more to ensure that we always wrap around properly if we are at the
             // end of a line.
             Console.Write ' '
 
-            { st with MaxRendered = promptLen + st.RenderedText.Length } |> UpdateHomeRow max
+            { st with MaxRendered = st.ShownPrompt.Length + st.RenderedText.Length } |> UpdateHomeRow max
 
         let private CmdDebug st =
             st.History |> History.dump
@@ -451,18 +541,14 @@ namespace BlackFox
 
         let private RenderFrom pos st =
             let rpos = TextToRenderPos pos st.Text
-            let mutable i = rpos;
-            
-            while i < st.RenderedText.Length do
-                Console.Write (st.RenderedText.[i])
-                i <- i + 1
 
-            let promptLen = st |> promptLen
+            st.RenderedText.WriteToConsoleFrom rpos
+            let mutable i = st.RenderedText.Length
 
-            if (promptLen + st.RenderedText.Length) > st.MaxRendered then
-                { st with MaxRendered = promptLen + st.RenderedText.Length }
+            if (st.ShownPrompt.Length + st.RenderedText.Length) > st.MaxRendered then
+                { st with MaxRendered = st.ShownPrompt.Length + st.RenderedText.Length }
             else
-                let max_extra = st.MaxRendered - promptLen
+                let max_extra = st.MaxRendered - st.ShownPrompt.Length
                 while i < max_extra do
                     Console.Write (' ')
                     i <- i + 1
@@ -508,17 +594,18 @@ namespace BlackFox
             Console.SetCursorPosition (0, st.HomeRow)
             st |> InitText (newtext)
 
-        let private SetPromptCore newprompt display st =
+        let private SetPromptCore newprompt st =
             Console.SetCursorPosition (0, st.HomeRow)
-            { st with ShownPrompt = newprompt; ShownPromptDisplay = display }
+            { st with ShownPrompt = newprompt }
                 |> Render
                 |> ForceCursor st.Cursor
 
         let private SetPrompt newprompt st =
-            st |> SetPromptCore newprompt st.Settings.PromptDisplay
+            st |> SetPromptCore newprompt
 
         let private SetSearchPrompt s st =
-           st |> SetPromptCore s st.Settings.SearchPromptDisplay
+            let promptRaw = sprintf "^[DarkGray](^[Cyan]reverse-i-search^[DarkGray])`^[Reset]%s^[DarkGray]': " s
+            st |> SetPromptCore (ColoredString promptRaw)
 
         //
         // Adds the current line to the history if needed
@@ -828,7 +915,7 @@ namespace BlackFox
 
             // Interrupt the editor
             thread.Abort ()
-
+            
         let private readKeyWithEscMeaningAlt () =
             let key = Console.ReadKey (true)
             if key.Key = ConsoleKey.Escape then
@@ -878,7 +965,6 @@ namespace BlackFox
                         MaxRendered = 0
                         SpecifiedPrompt = prompt
                         ShownPrompt = prompt
-                        ShownPromptDisplay = editor.Settings.PromptDisplay
                 }
 
             let cancelHandler = new ConsoleCancelEventHandler(interruptEdit Thread.CurrentThread)
