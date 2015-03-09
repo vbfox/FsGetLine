@@ -6,6 +6,10 @@
 
         [<EntryPoint>]
         let main argv = 
+            coloredWriteLine "Welcome to the ^[Cyan]F#^[Reset] GetLine shell demo"
+            coloredWriteLine "^[DarkGray]Use Ctrl+D to quit"
+            Console.WriteLine ()
+            
             let autoComplete (str:String) cursor =
                 if str.StartsWith("test") && cursor = 4 then
                     { FsGetLine.Completion.Result = ["42"]; FsGetLine.Completion.Prefix = "" }
@@ -21,7 +25,7 @@
                 })
             let mutable s = Some("")
             while s.IsSome do
-                let (newEditor, line) = editor |> FsGetLine.get (ColoredString "^[Cyan]F#^[DarkGray] > ") ""
+                let (newEditor, line) = editor |> FsGetLine.get (ColoredString "^[Cyan]F# ^[Yellow]Shell ^[DarkGray]> ") ""
                 editor <- newEditor
                 s <- line
                 

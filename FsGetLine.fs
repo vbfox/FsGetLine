@@ -309,6 +309,13 @@ namespace BlackFox
                         x.fold writeChar setColors' 0 |> ignore
                         )
 
+            let coloredWrite s =
+                (ColoredString s).WriteToConsole ()
+
+            let coloredWriteLine s =
+                coloredWrite s
+                Console.WriteLine()
+
         open ColoredString
 
         type Completion = { Result : string list; Prefix : string }
