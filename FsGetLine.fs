@@ -379,11 +379,14 @@ namespace BlackFox
 
         let private CmdDone st = { st with DoneEditing = true}
 
+        let private (|IsTab|IsNotTab|) c = if c = '\t' then IsTab else IsNotTab
+        let private (|NeedEscape|NeedNoEscape|) c = if c <> '\t' && (int)c < 26 then NeedEscape else NeedNoEscape
+
         let private TextToRenderPos pos (text:string) =
-            let foldFunc state (c:char) = 
-                match (int)c with
-                | c when c = 9 -> state + 4
-                | c when c < 23 -> state + 2
+            let foldFunc state c = 
+                match c with
+                | IsTab -> state + 4
+                | NeedEscape -> state + 2
                 | _ -> state + 1
 
             text |> Seq.take pos |> Seq.fold foldFunc 0 
@@ -410,29 +413,20 @@ namespace BlackFox
             else
                 st
 
-        let private render (text:string) =                 
-            let renderedText = new StringBuilder()
+        let private render (text:string) =
+            let foldFunc (state:StringBuilder) c = 
+                match c with
+                | IsTab -> state.Append ("    ")
+                | NeedEscape -> (state.Append ('^')).Append ((char) ((int)c + (int) 'A' - 1))
+                | _ -> state.Append c
 
-            for i = 0 to text.Length - 1 do
-                let c = (int) text.[i];
-                if c < 26 then
-                    if c = (int)'\t' then
-                        renderedText.Append ("    ") |> ignore
-                    else
-                        renderedText.Append ('^') |> ignore
-                        renderedText.Append ((char) (c + (int) 'A' - 1)) |> ignore
-                        
-                else
-                    renderedText.Append ((char)c) |> ignore
-
-            renderedText.ToString()
+            let builder = text |> Seq.fold foldFunc (new StringBuilder())
+            builder.ToString()
 
         let private UpdateHomeRow screenpos st = 
             let lines = 1 + (screenpos / Console.WindowWidth);
 
             { st with HomeRow = System.Math.Max (0, Console.CursorTop - (lines - 1)) }
-
-
 
         let private Render st =
             st.ShownPromptDisplay.Show st.ShownPrompt
