@@ -47,6 +47,7 @@
     <Reference Include="System.Numerics" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="ColoredString.fs" />
     <Compile Include="FsGetLine.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>

@@ -2,7 +2,7 @@
 
     module GetLineTestApp =
         open System
-        open FsGetLine.ColoredString
+        open ColoredString
 
         [<EntryPoint>]
         let main argv = 
