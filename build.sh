@@ -1,6 +1,6 @@
 #!/bin/bash
+set -eo pipefail
 
-function dotnet { if test "$OS" = "Windows_NT"; then $@; else mono $@; fi }
+./paket.sh restore || { exit $?; }
 
-dotnet paket.exe restore || { exit $?; }
-dotnet packages/FAKE/tools/FAKE.exe $@ --fsiargs build/build.fsx
+dotnet run --project build/BlackFox.FsGetLine.Build.fsproj -- "$@"

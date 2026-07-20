@@ -1,7 +1,20 @@
 source https://api.nuget.org/v3/index.json
+storage: none
+framework: net10.0
 
-nuget FAKE
-nuget FSharp.Core ~> 4
-nuget NUnit
-nuget NUnit.ConsoleRunner
-github fsharp/FAKE modules/Octokit/Octokit.fsx
+// Build infrastructure
+group Build
+    source https://api.nuget.org/v3/index.json
+    storage: none
+    framework: net10.0
+
+    nuget Fake.Core.Target
+    nuget Fake.Core.Environment
+    nuget Fake.Core.Trace
+    nuget Fake.Core.ReleaseNotes
+    nuget Fake.Core.UserInput
+    nuget Fake.DotNet.Cli
+    nuget Fake.IO.FileSystem
+    nuget Fake.BuildServer.GitHubActions
+    nuget BlackFox.Fake.BuildTask
+    nuget BlackFox.CommandLine
