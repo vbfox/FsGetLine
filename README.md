@@ -1,8 +1,8 @@
 FsGetLine
 =========
 
-[![AppVeyor Build status](https://ci.appveyor.com/api/projects/status/4471x0562ck3n71h/branch/master?svg=true)](https://ci.appveyor.com/project/vbfox/fsgetline/branch/master)
-[![Travis-CI Build status](https://travis-ci.org/vbfox/FsGetLine.svg?branch=master)](https://travis-ci.org/vbfox/FsGetLine)
+[![CI](https://github.com/vbfox/FsGetLine/actions/workflows/ci.yml/badge.svg)](https://github.com/vbfox/FsGetLine/actions/workflows/ci.yml)
+
 This repository contains an implementation of 'getline' in F#.
 
 The original version is [getline.cs][1] by Miguel de Icaza as described

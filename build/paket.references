@@ -1,0 +1,11 @@
+group Build
+    Fake.Core.Target
+    Fake.Core.Environment
+    Fake.Core.Trace
+    Fake.Core.ReleaseNotes
+    Fake.Core.UserInput
+    Fake.DotNet.Cli
+    Fake.IO.FileSystem
+    Fake.BuildServer.GitHubActions
+    BlackFox.Fake.BuildTask
+    BlackFox.CommandLine

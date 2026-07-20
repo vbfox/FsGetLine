@@ -1,7 +1,0 @@
-language: csharp
-
-script:
-  - ./build.sh CI
-
-mono:
-  - latest
