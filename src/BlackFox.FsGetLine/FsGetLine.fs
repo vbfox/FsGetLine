@@ -553,6 +553,26 @@ namespace BlackFox
             | Some(search) -> st |> searchAppend c search
             | None -> st |> insertChar (c)
 
+        /// Length of the longest common prefix shared by every string in `completions`
+        /// (index of the last matching character, or -1 if there is none).
+        let commonPrefixLength (completions: string[]) =
+            let ncompletions = completions.Length
+            let mutable last = -1
+            let mutable p = 0
+            let mutable mismatch = false
+            while p < completions.[0].Length && not mismatch do
+                let c = completions.[0].[p]
+                let mutable i = 1
+                while i < ncompletions && not mismatch do
+                    if completions.[i].Length < p then mismatch <- true
+                    if completions.[i].[p] <> c then mismatch <- true
+                    i <- i + 1
+
+                if not mismatch then
+                    last <- p
+                    p <- p + 1
+            last
+
         let private cmdTabOrComplete st =
             let mutable complete = false;
 
@@ -569,31 +589,18 @@ namespace BlackFox
                     let completion = st.Settings.AutoCompleteEvent.Value st.Text st.Cursor
                     let completions = completion.Result
                     if completions.Length <> 0 then
-                        let ncompletions = completions.Length
-                    
                         if completions.Length = 1 then
                             st |> insertTextAtCursor (completions.[0])
                         else
-                            let mutable last = -1
-                            let mutable p = 0
-                            let mutable mismatch = false
-                            while p < completions.[0].Length && not mismatch do
-                                let c = completions.[0].[p]
-                                let mutable i = 1
-                                while i < ncompletions && not mismatch do
-                                    if completions.[i].Length < p then mismatch <- true
-                                    if completions.[i].[p] <> c then mismatch <- true
-                                    
-                                if not mismatch then
-                                    last <- p;
-                                    p <- p + 1
+                            let completionsArray = completions |> List.toArray
+                            let last = commonPrefixLength completionsArray
 
-                            let st = 
+                            let st =
                                 if last <> -1 then
-                                    st |> insertTextAtCursor (completions.[0].Substring (0, last+1))
+                                    st |> insertTextAtCursor (completionsArray.[0].Substring (0, last+1))
                                 else
                                     st
-                                
+
                             Console.WriteLine ()
                             for s in completions do
                                 Console.Write (completion.Prefix)
