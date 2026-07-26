@@ -4,10 +4,12 @@
     <TargetFramework>netstandard2.0</TargetFramework>
     <AssemblyName>BlackFox.FsGetLine</AssemblyName>
     <RootNamespace>FsGetLine</RootNamespace>
+    <RealSig>true</RealSig>
   </PropertyGroup>
 
   <ItemGroup>
     <None Include="paket.references" />
+    <Compile Include="InternalsVisibleTo.fs" />
     <Compile Include="ColoredString.fs" />
     <Compile Include="FsGetLine.fs" />
   </ItemGroup>

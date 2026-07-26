@@ -555,7 +555,7 @@ namespace BlackFox
 
         /// Length of the longest common prefix shared by every string in `completions`
         /// (index of the last matching character, or None if there is none).
-        let commonPrefixLength (completions: string[]) =
+        let internal commonPrefixLength (completions: string[]) =
             let ncompletions = completions.Length
             if ncompletions = 0 then
                 None

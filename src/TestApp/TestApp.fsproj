@@ -6,6 +6,7 @@
     <AssemblyName>TestApp</AssemblyName>
     <RootNamespace>TestApp</RootNamespace>
     <IsPackable>false</IsPackable>
+    <RealSig>true</RealSig>
   </PropertyGroup>
 
   <ItemGroup>
