@@ -2,6 +2,12 @@ source https://api.nuget.org/v3/index.json
 storage: none
 framework: net10.0
 
+nuget FsCheck
+nuget Expecto
+nuget Expecto.FsCheck
+nuget YoloDev.Expecto.TestSdk
+nuget Microsoft.NET.Test.Sdk
+
 // Build infrastructure
 group Build
     source https://api.nuget.org/v3/index.json
