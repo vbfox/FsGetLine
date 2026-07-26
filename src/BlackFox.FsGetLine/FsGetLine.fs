@@ -51,7 +51,7 @@ namespace BlackFox
                 let newLines = history.Lines |> Array.copy
                 newLines.[history.Head] <- line
                 let newHead = (history.Head+1) % history.Length
-                let newTail = if newHead = history.Tail then (history.Tail+1 % history.Length) else history.Tail
+                let newTail = if newHead = history.Tail then history.Tail+1 % history.Length else history.Tail
                 let newCount = if history.Count <> history.Length then history.Count + 1 else history.Count
 
                 { history with Lines = newLines; Head = newHead; Tail = newTail; Count = newCount}
@@ -94,17 +94,17 @@ namespace BlackFox
             /// nul if there is no data in the history to move to.
             let previous history =
                 if not (previousAvailable history) then
-                    (history, None)
+                    history, None
                 else
                     let newCursor = if history.Cursor = 0 then history.Length - 1 else history.Cursor - 1
-                    ({ history with Cursor = newCursor }, Some(history.Lines.[newCursor]))
+                    { history with Cursor = newCursor }, Some(history.Lines.[newCursor])
 
             let next history =
                 if not (nextAvailable history) then
-                    (history, None)
+                    history, None
                 else
                     let newCursor = (history.Cursor + 1) % history.Length
-                    ({ history with Cursor = newCursor }, Some(history.Lines.[newCursor]))
+                    { history with Cursor = newCursor }, Some(history.Lines.[newCursor])
 
             let cursorToEnd history =
                 if history.Head <> history.Tail then
@@ -123,29 +123,30 @@ namespace BlackFox
                 let mutable i = 0
                 let mutable found = false
                 let mutable newCursor = history.Cursor
-                while (i < history.Count && not found) do
+                while i < history.Count && not found do
                     let mutable slot = history.Cursor-i-1;
                     if slot < 0 then
                         slot <- history.Length+slot;
                     if slot >= history.Length then
                         slot <- 0
-                    if (not (isNull(history.Lines.[slot])) && history.Lines.[slot].IndexOf (term) <> -1) then
+                    let slotLine = history.Lines.[slot]
+                    if not (isNull slotLine) && slotLine.IndexOf term <> -1 then
                         newCursor <- slot;
                         found <- true
 
                     i <- i + 1
 
                 if found then
-                    ({history with Cursor = newCursor}, Some(history.Lines.[newCursor]))
+                    {history with Cursor = newCursor}, Some(history.Lines.[newCursor])
                 else
-                    (history, None)
+                    history, None
 
             let private getFile app =
                 match app with
-                | Some(app) ->
-                    let dir = Environment.GetFolderPath (Environment.SpecialFolder.ApplicationData)
+                | Some app ->
+                    let dir = Environment.GetFolderPath Environment.SpecialFolder.ApplicationData
                     let path = Path.Combine (dir, "." + app + "-history")
-                    Some(path)
+                    Some path
                 | None ->
                     None
 
@@ -153,7 +154,7 @@ namespace BlackFox
                 let histfile = getFile app
 
                 match histfile with
-                | Some(histfile) ->
+                | Some histfile ->
                     if File.Exists histfile then
                         let rec loadNextLine (reader:StreamReader) history =
                             let line = reader.ReadLine ()
@@ -170,7 +171,7 @@ namespace BlackFox
             let save history =
                 let histfile = getFile history.App
                 match histfile with
-                | Some(histfile) ->
+                | Some histfile ->
                     use sw = File.CreateText histfile
                     let start = if history.Count = history.Length then history.Head else history.Tail
                     for i = start to start + history.Count - 1 do
@@ -180,8 +181,8 @@ namespace BlackFox
 
         /// Handle the display of ANSI C0 control characters by prefixing them with "^"
         module private AnsiControlCodes =
-            let public (|CanEscape|NoEscape|) (c : char) = if (int)c < 31 then CanEscape else NoEscape
-            let public toDisplayableChar c = (char) ((int)c + (int) 'A' - 1)
+            let public (|CanEscape|NoEscape|) (c : char) = if int c < 31 then CanEscape else NoEscape
+            let public toDisplayableChar c = char (int c + int 'A' - 1)
 
             let public fold (onNormal:'st -> char -> 'st) (onEscape:'st -> char -> 'st) (st:'st) (s:string) =
                 let foldFunc st c =
@@ -193,8 +194,8 @@ namespace BlackFox
 
             let public escapeChar c =
                 match c with
-                | CanEscape -> "^" + (string)(toDisplayableChar c)
-                | c -> (string)c
+                | CanEscape -> "^" + string (toDisplayableChar c)
+                | c -> string c
 
         type Completion = { Result : string list; Prefix : string }
         type AutoCompleteHandler = string -> int -> Completion
@@ -352,11 +353,11 @@ namespace BlackFox
             member val KeyInfo = keyInfo
             member val KeyHandler = h
 
-            new(cmd : Command, key, h : KeyHandler) = Handler(cmd, new ConsoleKeyInfo((char) 0, key, false, false, false), h)
+            new(cmd : Command, key, h : KeyHandler) = Handler(cmd, new ConsoleKeyInfo(char 0, key, false, false, false), h)
             new(cmd : Command, c, h : KeyHandler) = Handler(cmd, new ConsoleKeyInfo (c, ConsoleKey.Zoom, false, false, false), h)
 
             static member Alt cmd c k h = Handler (cmd, new ConsoleKeyInfo (c, k, false, true, false), h)
-            static member Control cmd (c : char) h = Handler (cmd, (char) ((int)c - (int)'A' + 1), h)
+            static member Control cmd (c : char) h = Handler (cmd, char (int c - int 'A' + 1), h)
 
         let private cmdDone st = { st with DoneEditing = true}
 
@@ -365,21 +366,21 @@ namespace BlackFox
         let private textToRenderPos pos (text:string) =
             text.Substring(0, pos)
                 |> AnsiControlCodes.fold
-                    (fun st c -> st + (if c = '\t' then 4 else 1))
+                    (fun st c -> st + if c = '\t' then 4 else 1)
                     (fun st c -> st + 2)
                     0
 
-        let private textToScreenPos pos st = st.ShownPrompt.Length + (textToRenderPos pos st.Text)
+        let private textToScreenPos pos st = st.ShownPrompt.Length + textToRenderPos pos st.Text
 
         let private lineCount st = (st.ShownPrompt.Length + st.RenderedText.Length) / Console.WindowWidth
 
         let private forceCursor newpos st =
-            let actualPos = st.ShownPrompt.Length + (textToRenderPos newpos st.Text)
-            let row = st.HomeRow + (actualPos/Console.WindowWidth)
-            let row = if row < Console.BufferHeight then row else Console.BufferHeight-1
+            let actualPos = st.ShownPrompt.Length + textToRenderPos newpos st.Text
+            let row = st.HomeRow + actualPos / Console.WindowWidth
+            let row = if row < Console.BufferHeight then row else Console.BufferHeight - 1
             let col = actualPos % Console.WindowWidth
 
-            Console.SetCursorPosition (col, row);
+            Console.SetCursorPosition (col, row)
 
             { st with Cursor = newpos }
 
@@ -395,14 +396,14 @@ namespace BlackFox
                                 if c = '\t' then
                                     b.Append("    ")
                                 else
-                                    b.Append(ColoredString.EscapeToString((string)c)))
+                                    b.Append(ColoredString.EscapeToString(string c)))
                             (fun b c -> b.Append(sprintf "^[DarkGreen]^^^[Green]%c^[Reset]" (AnsiControlCodes.toDisplayableChar c)))
                             (new StringBuilder())
 
             ColoredString(builder.ToString())
 
         let private updateHomeRow screenpos st =
-            let lines = 1 + (screenpos / Console.WindowWidth);
+            let lines = 1 + screenpos / Console.WindowWidth
 
             { st with HomeRow = System.Math.Max (0, Console.CursorTop - (lines - 1)) }
 
@@ -413,7 +414,7 @@ namespace BlackFox
             let max = System.Math.Max (st.RenderedText.Length + st.ShownPrompt.Length, st.MaxRendered);
 
             for i = st.RenderedText.Length + st.ShownPrompt.Length to st.MaxRendered - 1 do
-                Console.Write (' ');
+                Console.Write ' '
 
             // Write one more to ensure that we always wrap around properly if we are at the
             // end of a line.
@@ -432,22 +433,22 @@ namespace BlackFox
             st.RenderedText.WriteToConsoleFrom rpos
             let mutable i = st.RenderedText.Length
 
-            if (st.ShownPrompt.Length + st.RenderedText.Length) > st.MaxRendered then
+            if st.ShownPrompt.Length + st.RenderedText.Length > st.MaxRendered then
                 { st with MaxRendered = st.ShownPrompt.Length + st.RenderedText.Length }
             else
                 let maxExtra = st.MaxRendered - st.ShownPrompt.Length
                 while i < maxExtra do
-                    Console.Write (' ')
+                    Console.Write ' '
                     i <- i + 1
                 st
 
         let private insertChar (c:char) st =
             let prevLines = lineCount st
-            let newText = st.Text.Insert (st.Cursor, (string)c)
+            let newText = st.Text.Insert (st.Cursor, string c)
 
             let st = { st with Text = newText; RenderedText = renderText newText }
 
-            if prevLines <> (lineCount st) then
+            if prevLines <> lineCount st then
                 Console.SetCursorPosition (0, st.HomeRow)
                 let newCursor = st.Cursor + 1
                 st
@@ -464,15 +465,15 @@ namespace BlackFox
             let prevLines = st |> lineCount;
             let newText = st.Text.Insert (st.Cursor, str)
             let st = { st with Text = newText; RenderedText = renderText newText}
-            if prevLines <> (lineCount st) then
+            if prevLines <> lineCount st then
                 Console.SetCursorPosition (0, st.HomeRow)
                 st |> render |> forceCursor (st.Cursor + str.Length)
             else
                 let st = st |> renderFrom st.Cursor |> forceCursor (st.Cursor + str.Length)
                 st |> updateHomeRow (textToScreenPos st.Cursor st)
 
-        let private initText (initial:string option) st =
-            let newText = match initial with | Some(null) | None -> "" | Some(initial) -> initial
+        let private initText (initial: string option) st =
+            let newText = match initial with | Some null | None -> "" | Some initial -> initial
             { st with Cursor = newText.Length; Text = newText; RenderedText = renderText newText }
                 |> render
                 |> forceCursor newText.Length
@@ -494,16 +495,14 @@ namespace BlackFox
             let promptRaw = sprintf "^[DarkGray](^[Cyan]reverse-i-search^[DarkGray])`^[Reset]%s^[DarkGray]': " s
             st |> setPromptCore (ColoredString promptRaw)
 
-        //
-        // Adds the current line to the history if needed
-        //
+        /// Adds the current line to the history if needed
         let private historyUpdateLine st =
             let newHistory = st.History |> History.update st.Text
             { st with History = newHistory }
 
         let rec private reverseSearch st =
             match st.SearchState with
-            | Some(search) ->
+            | Some search ->
                 let mutable p = -1
                 if st.Cursor = st.Text.Length then
                     // The cursor is at the end of the string
@@ -514,7 +513,7 @@ namespace BlackFox
                     if start <> -1 then p <- st.Text.LastIndexOf (search.Term, start)
 
                 if p <> -1 then
-                    { st with SearchState = Some({ search with MatchAt = p })} |> forceCursor p
+                    { st with SearchState = Some { search with MatchAt = p } } |> forceCursor p
                 else
                     // Need to search backwards in history
                     let st = st |> historyUpdateLine
@@ -522,7 +521,7 @@ namespace BlackFox
                     let st = { st with History = newHistory }
                     match searchResult with
                     | Some(_) ->
-                        { st with SearchState = Some({ search with MatchAt = -1 }) }
+                        { st with SearchState = Some { search with MatchAt = -1 } }
                             |> setText searchResult
                             |> reverseSearch
                     | None -> st
@@ -530,14 +529,12 @@ namespace BlackFox
                 failwith "No search in progress"
 
         let private searchAppend (c:char) search st =
-            let newTerm = search.Term + (string)c
+            let newTerm = search.Term + string c
             let st =
                 { st with SearchState = Some { search with Term = newTerm } }
                 |> setSearchPrompt newTerm
 
-            //
             // If the new typed data still matches the current text, stay here
-            //
             let mutable stillMatches = false
             if st.Cursor < st.Text.Length then
                 let r = st.Text.Substring (st.Cursor, st.Text.Length - st.Cursor)
@@ -550,11 +547,11 @@ namespace BlackFox
 
         let private handleChar c st =
             match st.SearchState with
-            | Some(search) -> st |> searchAppend c search
+            | Some search -> st |> searchAppend c search
             | None -> st |> insertChar (c)
 
         /// Length of the longest common prefix shared by every string in `completions`
-        /// (index of the last matching character, or None if there is none).
+        /// Returns the index of the last matching character if there is any common prefix
         let internal commonPrefixLength (completions: string[]) =
             let ncompletions = completions.Length
             if ncompletions = 0 then
@@ -585,7 +582,7 @@ namespace BlackFox
                 else
                     let mutable i = 0
                     while i < st.Cursor && not complete do
-                        if not (Char.IsWhiteSpace (st.Text.[i])) then
+                        if not (Char.IsWhiteSpace st.Text.[i]) then
                             complete <- true
 
                 if complete then
@@ -593,7 +590,7 @@ namespace BlackFox
                     let completions = completion.Result
                     if completions.Length <> 0 then
                         if completions.Length = 1 then
-                            st |> insertTextAtCursor (completions.[0])
+                            st |> insertTextAtCursor completions.[0]
                         else
                             let completionsArray = completions |> List.toArray
                             let last = commonPrefixLength completionsArray
@@ -606,18 +603,18 @@ namespace BlackFox
 
                             Console.WriteLine ()
                             for s in completions do
-                                Console.Write (completion.Prefix)
-                                Console.Write (s)
-                                Console.Write (' ')
+                                Console.Write completion.Prefix
+                                Console.Write s
+                                Console.Write ' '
 
                             Console.WriteLine ()
                             st |> render |> forceCursor st.Cursor
                     else
                         st
                 else
-                    st |> handleChar ('\t')
+                    st |> handleChar '\t'
             else
-                st |> handleChar ('t')
+                st |> handleChar 't'
 
         let private cmdHome st = st |> updateCursor 0
         let private cmdEnd st = st |> updateCursor st.Text.Length
@@ -649,7 +646,7 @@ namespace BlackFox
             else
                 let mutable i = p-1;
 
-                if Char.IsPunctuation (text.[i]) || Char.IsSymbol (text.[i]) || Char.IsWhiteSpace (text.[i]) then
+                if Char.IsPunctuation text.[i] || Char.IsSymbol text.[i] || Char.IsWhiteSpace text.[i] then
                     while (i >= 0 && not (Char.IsLetterOrDigit (text.[i]))) do i <- i - 1
                     while (i >= 0 && Char.IsLetterOrDigit (text.[i])) do i <- i - 1
                 else
@@ -688,7 +685,7 @@ namespace BlackFox
                 Console.WriteLine ()
                 // If there is no input, this behaves like EOF
                 { st with DoneEditing = true; SignalExit = true }
-            else if (st.Cursor <> st.Text.Length) then
+            else if st.Cursor <> st.Text.Length then
                 let newText = st.Text.Remove (st.Cursor, 1)
                 let st = { st with Text = newText; RenderedText = renderText newText }
                 st |> renderAfter st.Cursor
@@ -723,14 +720,14 @@ namespace BlackFox
 
         let private cmdHistoryPrev st =
             if History.previousAvailable st.History then
-                let (newHistory, text) = st.History |> History.update st.Text |> History.previous
+                let newHistory, text = st.History |> History.update st.Text |> History.previous
                 { st with History = newHistory } |> setText text
             else
                 st
 
         let private cmdHistoryNext st =
             if History.nextAvailable st.History then
-                let (newHistory, text) = st.History |> History.update st.Text |> History.next
+                let newHistory, text = st.History |> History.update st.Text |> History.next
                 { st with History = newHistory } |> setText text
             else
                 st
@@ -749,12 +746,12 @@ namespace BlackFox
             | None ->
                 { st with SearchState = Some { MatchAt = -1; Term = ""; Direction = SearchDirection.Backward } }
                     |> setSearchPrompt ("")
-            | Some(search) ->
+            | Some search ->
                 if search.Term = "" then
                     match st.PreviousSearch with
                     | None | Some("") ->
                         st
-                    | Some(previousTerm) ->
+                    | Some previousTerm ->
                         { st with SearchState = Some { search with Term = previousTerm } }
                             |> setSearchPrompt previousTerm
                             |> reverseSearch
@@ -781,23 +778,23 @@ namespace BlackFox
                 new Handler (Command.TabOrComplete,ConsoleKey.Tab,        cmdTabOrComplete)
 
                 // Emacs keys
-                Handler.Control Command.Home 'A' (cmdHome)
-                Handler.Control Command.End 'E' (cmdEnd)
-                Handler.Control Command.Left 'B' (cmdLeft)
-                Handler.Control Command.Right 'F' (cmdRight)
-                Handler.Control Command.HistoryPrev 'P' (cmdHistoryPrev)
-                Handler.Control Command.HistoryNext 'N' (cmdHistoryNext)
-                Handler.Control Command.CmdKillToEOF 'K' (cmdKillToEOF)
-                Handler.Control Command.Yank 'Y' (cmdYank)
-                Handler.Control Command.DeleteChar 'D' (cmdDeleteChar)
-                Handler.Control Command.Refresh 'L' (cmdRefresh)
-                Handler.Control Command.ReverseSearch 'R' (cmdReverseSearch)
+                Handler.Control Command.Home 'A' cmdHome
+                Handler.Control Command.End 'E' cmdEnd
+                Handler.Control Command.Left 'B' cmdLeft
+                Handler.Control Command.Right 'F' cmdRight
+                Handler.Control Command.HistoryPrev 'P' cmdHistoryPrev
+                Handler.Control Command.HistoryNext 'N' cmdHistoryNext
+                Handler.Control Command.CmdKillToEOF 'K' cmdKillToEOF
+                Handler.Control Command.Yank 'Y' cmdYank
+                Handler.Control Command.DeleteChar 'D' cmdDeleteChar
+                Handler.Control Command.Refresh 'L' cmdRefresh
+                Handler.Control Command.ReverseSearch 'R' cmdReverseSearch
 
-                Handler.Alt Command.BackwardWord 'B' ConsoleKey.B (cmdBackwardWord)
-                Handler.Alt Command.ForwardWord 'F' ConsoleKey.F (cmdForwardWord)
+                Handler.Alt Command.BackwardWord 'B' ConsoleKey.B cmdBackwardWord
+                Handler.Alt Command.ForwardWord 'F' ConsoleKey.F cmdForwardWord
 
-                Handler.Alt Command.DeleteWord 'D' ConsoleKey.D (cmdDeleteWord)
-                Handler.Alt Command.DeleteBackword ((char)8) ConsoleKey.Backspace (cmdDeleteBackword)
+                Handler.Alt Command.DeleteWord 'D' ConsoleKey.D cmdDeleteWord
+                Handler.Alt Command.DeleteBackword (char 8) ConsoleKey.Backspace cmdDeleteBackword
 
                 // DEBUG
                 //Handler.Control ('T', CmdDebug),
@@ -814,11 +811,11 @@ namespace BlackFox
             thread.Abort ()
 
         let private readKeyWithEscMeaningAlt () =
-            let key = Console.ReadKey (true)
+            let key = Console.ReadKey true
             if key.Key = ConsoleKey.Escape then
-                (Console.ReadKey (true), ConsoleModifiers.Alt)
+                Console.ReadKey true, ConsoleModifiers.Alt
             else
-                (key, key.Modifiers)
+                key, key.Modifiers
 
         let private tryFindHandler (input:ConsoleKeyInfo) modifier =
             handlers |> Array.tryFind (fun handler ->
@@ -836,8 +833,8 @@ namespace BlackFox
             match inputHander with
             | Some(handler) ->
                 let st = handler.KeyHandler st
-                let st = { st with LastCommand = Some(handler.HandledCommand) }
-                match (st.SearchState, handler.HandledCommand) with
+                let st = { st with LastCommand = Some handler.HandledCommand }
+                match st.SearchState, handler.HandledCommand with
                 | ( _, Command.ReverseSearch) -> st
                 | (Some(search), _) -> { st with PreviousSearch = Some(search.Term); SearchState = None} |> setPrompt st.SpecifiedPrompt
                 | _ -> st
@@ -867,7 +864,7 @@ namespace BlackFox
             let cancelHandler = new ConsoleCancelEventHandler(interruptEdit Thread.CurrentThread)
             Console.CancelKeyPress.AddHandler cancelHandler
 
-            st <- st |> initText (Some(initial))
+            st <- st |> initText (Some initial)
 
             while not st.DoneEditing do
                 try
@@ -876,11 +873,11 @@ namespace BlackFox
                 | :? ThreadAbortException ->
                     Thread.ResetAbort ()
                     match st.SearchState with
-                    | Some(_) ->
+                    | Some _ ->
                         st <- { st with SearchState = None }
                         Console.WriteLine ()
-                        st <- st |> setPrompt (prompt)
-                        st <- st |> setText (Some(""))
+                        st <- st |> setPrompt prompt
+                        st <- st |> setText (Some "")
                     | None ->
                         st <- { st with DoneEditing = true; SignalExit = true}
 
@@ -890,11 +887,11 @@ namespace BlackFox
 
             if st.SignalExit then
                 st.History |> History.save
-                (st |> updateEditor editor, None)
+                st |> updateEditor editor, None
             else
                 if st.Text <> "" then
                     st <- { st with History = History.accept st.Text st.History }
                 else
                     st <- { st with History = History.removeLast st.History }
 
-                (st |> updateEditor editor, Some(st.Text))
+                st |> updateEditor editor, Some st.Text
