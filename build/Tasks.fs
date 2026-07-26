@@ -12,6 +12,7 @@ let srcDir = rootDir </> "src"
 let artifactsDir = rootDir </> "artifacts"
 let solution = rootDir </> "FsGetLine.sln"
 let libraryProject = srcDir </> "BlackFox.FsGetLine" </> "BlackFox.FsGetLine.fsproj"
+let testsProject = srcDir </> "BlackFox.FsGetLine.Tests" </> "BlackFox.FsGetLine.Tests.fsproj"
 
 let configuration = DotNet.BuildConfiguration.Release
 
@@ -24,6 +25,10 @@ let createAndGetDefault () =
 
     let build = BuildTask.create "Build" [clean.IfNeeded] {
         DotNet.build (fun o -> { o with Configuration = configuration }) solution
+    }
+
+    let runTests = BuildTask.create "RunTests" [build] {
+        DotNet.test (fun o -> { o with Configuration = configuration; NoBuild = true }) testsProject
     }
 
     let pack = BuildTask.create "Pack" [build] {
@@ -59,6 +64,6 @@ let createAndGetDefault () =
             failwithf "dotnet nuget push failed with code %i" result.ExitCode
     }
 
-    let ci = BuildTask.createEmpty "CI" [clean; build; pack]
+    let ci = BuildTask.createEmpty "CI" [clean; build; runTests; pack]
 
-    BuildTask.createEmpty "Default" [build]
+    BuildTask.createEmpty "Default" [build; runTests]
