@@ -1,4 +1,4 @@
-﻿//
+//
 // getline.fs: A command line editor
 //
 // Authors:
@@ -7,6 +7,7 @@
 //
 // Copyright 2008 Novell, Inc.
 // Copyright 2015 Julien Roncaglia <julien@roncaglia.fr>
+// Copyright 2016 Xamarin Inc
 //
 // Dual-licensed under the terms of the MIT X11 license or the
 // Apache License 2.0
@@ -14,7 +15,6 @@
 // TODO:
 //    Enter an error (a = 1);  Notice how the prompt is in the wrong line
 //        This is caused by Stderr not being tracked by System.Console.
-//    Completion support
 //    Why is Thread.Interrupt not working?   Currently I resort to Abort which is too much.
 //
 // Limitations in System.Console:
@@ -200,6 +200,114 @@ namespace BlackFox
         type Completion = { Result : string list; Prefix : string }
         type AutoCompleteHandler = string -> int -> Completion
 
+        /// Saves the cursor position and console colors, runs `action`, then restores them.
+        /// Used to draw transient UI (like the completion popup) without disturbing the editor's
+        /// own rendering state.
+        let private saveExcursion (action: unit -> unit) =
+            let savedCol = Console.CursorLeft
+            let savedRow = Console.CursorTop
+            let savedFore = Console.ForegroundColor
+            let savedBack = Console.BackgroundColor
+
+            action ()
+
+            Console.CursorLeft <- savedCol
+            Console.CursorTop <- savedRow
+            Console.ForegroundColor <- savedFore
+            Console.BackgroundColor <- savedBack
+
+        /// State and rendering for the tab-completion popup window.
+        module CompletionState =
+            type CompletionState =
+                {
+                    Col : int
+                    Row : int
+                    Width : int
+                    Height : int
+                    Prefix : string
+                    Completions : string []
+                    SelectedItem : int
+                    TopItem : int
+                }
+
+            let create col row width height =
+                if col < 0 then invalidArg "col" (sprintf "Cannot be less than zero %d" col)
+                if row < 0 then invalidArg "row" "Cannot be less than zero"
+                if width < 1 then invalidArg "width" "Cannot be less than one"
+                if height < 1 then invalidArg "height" "Cannot be less than one"
+                { Col = col; Row = row; Width = width; Height = height; Prefix = ""; Completions = [||]; SelectedItem = 0; TopItem = 0 }
+
+            let current cs = cs.Completions.[cs.SelectedItem]
+
+            /// Pure: computes the (SelectedItem, TopItem) after moving to the next item, or None
+            /// if already on the last item. TopItem only advances once the selection scrolls past
+            /// the visible window (this is the fixed logic from upstream commit 642b064: the
+            /// window must advance by how far the selection is *past* the top, not how far past
+            /// the total height).
+            let nextSelection cs =
+                if cs.SelectedItem + 1 < cs.Completions.Length then
+                    let selectedItem = cs.SelectedItem + 1
+                    let topItem = if selectedItem - cs.TopItem >= cs.Height then cs.TopItem + 1 else cs.TopItem
+                    Some (selectedItem, topItem)
+                else
+                    None
+
+            /// Pure: computes the (SelectedItem, TopItem) after moving to the previous item, or
+            /// None if already on the first item.
+            let previousSelection cs =
+                if cs.SelectedItem > 0 then
+                    let selectedItem = cs.SelectedItem - 1
+                    let topItem = if selectedItem < cs.TopItem then selectedItem else cs.TopItem
+                    Some (selectedItem, topItem)
+                else
+                    None
+
+            let private drawSelection cs =
+                for r = 0 to cs.Height - 1 do
+                    let itemIdx = cs.TopItem + r
+                    let selected = itemIdx = cs.SelectedItem
+
+                    Console.ForegroundColor <- if selected then ConsoleColor.Black else ConsoleColor.Gray
+                    Console.BackgroundColor <- if selected then ConsoleColor.Cyan else ConsoleColor.Blue
+
+                    let item = cs.Prefix + cs.Completions.[itemIdx]
+                    let item = if item.Length > cs.Width then item.Substring (0, cs.Width) else item
+
+                    Console.CursorLeft <- cs.Col
+                    Console.CursorTop <- cs.Row + r
+                    Console.Write item
+                    for space = item.Length to cs.Width do
+                        Console.Write ' '
+
+            let show cs =
+                saveExcursion (fun () -> drawSelection cs)
+                cs
+
+            let selectNext cs =
+                match nextSelection cs with
+                | Some (selectedItem, topItem) ->
+                    let cs = { cs with SelectedItem = selectedItem; TopItem = topItem }
+                    saveExcursion (fun () -> drawSelection cs)
+                    cs
+                | None -> cs
+
+            let selectPrevious cs =
+                match previousSelection cs with
+                | Some (selectedItem, topItem) ->
+                    let cs = { cs with SelectedItem = selectedItem; TopItem = topItem }
+                    saveExcursion (fun () -> drawSelection cs)
+                    cs
+                | None -> cs
+
+            let private clear cs =
+                for r = 0 to cs.Height - 1 do
+                    Console.CursorLeft <- cs.Col
+                    Console.CursorTop <- cs.Row + r
+                    for space = 0 to cs.Width do
+                        Console.Write ' '
+
+            let remove cs = saveExcursion (fun () -> clear cs)
+
         type Command =
             | Done = 1
             | Home = 2
@@ -225,6 +333,14 @@ namespace BlackFox
             | Forward = 1
             | Backward = 2
 
+        [<RequireQualifiedAccess>]
+        type HeuristicsMode =
+            /// Do nothing, completion is only triggered explicitly (e.g. by pressing Tab).
+            | None
+            /// Heuristics that make sense for C#-like syntax (trigger completion on '.' outside
+            /// of numeric literals).
+            | CSharp
+
         type GetLineSettings =
             {
                 AppName : string option
@@ -235,6 +351,8 @@ namespace BlackFox
                 AutoCompleteEvent : AutoCompleteHandler option
 
                 TabAtStartCompletes : bool
+
+                HeuristicsMode : HeuristicsMode
             }
 
         let private defaultSettings =
@@ -243,6 +361,7 @@ namespace BlackFox
                 HistorySize = 10
                 AutoCompleteEvent = None
                 TabAtStartCompletes = true
+                HeuristicsMode = HeuristicsMode.None
             }
 
         type GetLine =
@@ -323,6 +442,9 @@ namespace BlackFox
                 /// Used to implement the Kill semantics (multiple Alt-Ds accumulate)
                 LastCommand : Command option
 
+                /// If we have a popup completion, this is Some and holds its state.
+                CurrentCompletion : CompletionState.CompletionState option
+
                 Settings : GetLineSettings
             }
 
@@ -343,23 +465,23 @@ namespace BlackFox
                 SearchState = None
                 PreviousSearch = None
                 LastCommand = None
+                CurrentCompletion = None
                 Settings = globalState.Settings
             }
 
         type private KeyHandler = LineEditorState -> LineEditorState
 
-        type private Handler(cmd : Command, keyInfo : ConsoleKeyInfo, h : KeyHandler) =
+        type private Handler(cmd : Command, keyInfo : ConsoleKeyInfo, h : KeyHandler, resetCompletion : bool) =
             member val HandledCommand = cmd
             member val KeyInfo = keyInfo
             member val KeyHandler = h
+            member val ResetCompletion = resetCompletion
 
-            new(cmd : Command, key, h : KeyHandler) = Handler(cmd, new ConsoleKeyInfo(char 0, key, false, false, false), h)
-            new(cmd : Command, c, h : KeyHandler) = Handler(cmd, new ConsoleKeyInfo (c, ConsoleKey.Zoom, false, false, false), h)
+            new(cmd : Command, key, h : KeyHandler, resetCompletion : bool) = Handler(cmd, new ConsoleKeyInfo(char 0, key, false, false, false), h, resetCompletion)
+            new(cmd : Command, c, h : KeyHandler, resetCompletion : bool) = Handler(cmd, new ConsoleKeyInfo (c, ConsoleKey.Zoom, false, false, false), h, resetCompletion)
 
-            static member Alt cmd c k h = Handler (cmd, new ConsoleKeyInfo (c, k, false, true, false), h)
-            static member Control cmd (c : char) h = Handler (cmd, char (int c - int 'A' + 1), h)
-
-        let private cmdDone st = { st with DoneEditing = true}
+            static member Alt cmd c k h = Handler (cmd, new ConsoleKeyInfo (c, k, false, true, false), h, true)
+            static member Control cmd (c : char) h resetCompletion = Handler (cmd, char (int c - int 'A' + 1), h, resetCompletion)
 
         let private (|IsTab|IsNotTab|) c = if c = '\t' then IsTab else IsNotTab
 
@@ -394,7 +516,7 @@ namespace BlackFox
             let builder = text |> AnsiControlCodes.fold
                             (fun (b:StringBuilder) c ->
                                 if c = '\t' then
-                                    b.Append("    ")
+                                    b.Append "    "
                                 else
                                     b.Append(ColoredString.EscapeToString(string c)))
                             (fun b c -> b.Append(sprintf "^[DarkGreen]^^^[Green]%c^[Reset]" (AnsiControlCodes.toDisplayableChar c)))
@@ -480,7 +602,7 @@ namespace BlackFox
 
         let private setText newtext st =
             Console.SetCursorPosition (0, st.HomeRow)
-            st |> initText (newtext)
+            st |> initText newtext
 
         let private setPromptCore newprompt st =
             Console.SetCursorPosition (0, st.HomeRow)
@@ -506,7 +628,7 @@ namespace BlackFox
                 let mutable p = -1
                 if st.Cursor = st.Text.Length then
                     // The cursor is at the end of the string
-                    p <- st.Text.LastIndexOf (search.Term)
+                    p <- st.Text.LastIndexOf search.Term
                 else
                     // The cursor is somewhere in the middle of the string
                     let start = if st.Cursor = search.MatchAt then st.Cursor - 1 else st.Cursor
@@ -517,10 +639,10 @@ namespace BlackFox
                 else
                     // Need to search backwards in history
                     let st = st |> historyUpdateLine
-                    let (newHistory, searchResult) = History.searchBackward search.Term st.History
+                    let newHistory, searchResult = History.searchBackward search.Term st.History
                     let st = { st with History = newHistory }
                     match searchResult with
-                    | Some(_) ->
+                    | Some _ ->
                         { st with SearchState = Some { search with MatchAt = -1 } }
                             |> setText searchResult
                             |> reverseSearch
@@ -545,10 +667,53 @@ namespace BlackFox
             else
                 st
 
-        let private handleChar c st =
-            match st.SearchState with
-            | Some search -> st |> searchAppend c search
-            | None -> st |> insertChar (c)
+        let private hideCompletions st =
+            match st.CurrentCompletion with
+            | None -> st
+            | Some cs ->
+                CompletionState.remove cs
+                { st with CurrentCompletion = None }
+
+        let private showCompletions (prefix:string) (completions:string list) st =
+            let windowHeight = System.Math.Min (completions.Length, Console.WindowHeight / 5)
+            let targetLine = Console.WindowHeight - windowHeight - 1
+
+            let st =
+                if Console.CursorTop > targetLine then
+                    let delta = Console.CursorTop - targetLine
+                    Console.CursorLeft <- 0
+                    Console.CursorTop <- Console.WindowHeight - 1
+                    for i = 0 to delta do
+                        for c = Console.WindowWidth downto 1 do
+                            Console.Write ' '
+                    Console.CursorTop <- targetLine
+                    Console.CursorLeft <- 0
+                    st |> render
+                else
+                    st
+
+            let maxWidth = 50
+            let plen = prefix.Length
+            let windowWidth =
+                completions
+                |> List.fold (fun acc s -> System.Math.Max (plen + s.Length, acc)) 12
+                |> min maxWidth
+
+            let completionsArray = completions |> List.toArray
+
+            let currentCompletion =
+                match st.CurrentCompletion with
+                | None ->
+                    let left = Console.CursorLeft - prefix.Length
+                    let left = if left + windowWidth + 1 >= Console.WindowWidth then Console.WindowWidth - windowWidth - 1 else left
+                    { CompletionState.create left (Console.CursorTop + 1) windowWidth windowHeight with
+                        Prefix = prefix
+                        Completions = completionsArray }
+                | Some cs -> { cs with Prefix = prefix; Completions = completionsArray }
+
+            let currentCompletion = CompletionState.show currentCompletion
+            Console.CursorLeft <- 0
+            { st with CurrentCompletion = Some currentCompletion }
 
         /// Length of the longest common prefix shared by every string in `completions`
         /// Returns the index of the last matching character if there is any common prefix
@@ -573,44 +738,103 @@ namespace BlackFox
                         p <- p + 1
                 last
 
-        let private cmdTabOrComplete st =
-            let mutable complete = false;
+        /// Triggers the completion engine. This will insert the best match found, then behaves
+        /// like the shell "tab" which will complete as much as possible given the options, and
+        /// shows a popup with the remaining choices if there is more than one.
+        let private complete st =
+            let completion = st.Settings.AutoCompleteEvent.Value st.Text st.Cursor
+            match completion.Result with
+            | [] -> st |> hideCompletions
+            | [single] -> st |> insertTextAtCursor single |> hideCompletions
+            | completions ->
+                let completionsArray = completions |> List.toArray
+                let last = commonPrefixLength completionsArray
 
+                let st =
+                    match last with
+                    | Some last -> st |> insertTextAtCursor (completionsArray.[0].Substring (0, last + 1))
+                    | None -> st
+
+                let prefix, completions =
+                    match last with
+                    | Some last ->
+                        let commonPrefix = completionsArray.[0].Substring (0, last + 1)
+                        (completion.Prefix + commonPrefix), (completions |> List.map (fun c -> c.Substring (last + 1)))
+                    | None ->
+                        completion.Prefix, completions
+
+                let st = st |> showCompletions prefix completions |> render
+                st |> forceCursor st.Cursor
+
+        /// When the user has triggered a completion window via the heuristics, this will try to
+        /// update the contents of it. The completion window is assumed to be hidden at this point.
+        let private updateCompletionWindow st =
+            if st.CurrentCompletion.IsSome then
+                failwith "This method should only be called if the window has been hidden"
+
+            let completion = st.Settings.AutoCompleteEvent.Value st.Text st.Cursor
+            match completion.Result with
+            | [] -> st
+            | completions ->
+                let st = st |> showCompletions completion.Prefix completions |> render
+                st |> forceCursor st.Cursor
+
+        /// Pure: implements the "csharp" heuristics-mode scan that decides whether the '.' just
+        /// inserted at `cursorPos` should trigger auto-completion, as opposed to being part of a
+        /// numeric literal like "1.2".
+        let csharpDotHeuristicTriggersCompletion (text: string) (cursorPos: int) =
+            let rec scan p =
+                if p < 0 then
+                    false
+                else
+                    let c = text.[p]
+                    if Char.IsDigit c then scan (p - 1)
+                    elif c = '_' then true
+                    elif Char.IsLetter c || Char.IsPunctuation c || Char.IsSymbol c || Char.IsControl c then true
+                    else scan (p - 1)
+
+            if cursorPos > 1 && Char.IsDigit text.[cursorPos - 2] then
+                scan (cursorPos - 3)
+            else
+                true
+
+        /// Implements heuristics to show the completion window based on the mode
+        let private heuristicAutoComplete wasCompleting (insertedChar:char) st =
+            match st.Settings.HeuristicsMode with
+            | HeuristicsMode.CSharp ->
+                if wasCompleting then
+                    insertedChar <> ' '
+                elif insertedChar = '.' then
+                    csharpDotHeuristicTriggersCompletion st.Text st.Cursor
+                else
+                    false
+            | HeuristicsMode.None -> false
+
+        let private handleChar c st =
+            match st.SearchState with
+            | Some search -> st |> searchAppend c search
+            | None ->
+                let wasCompleting = st.CurrentCompletion.IsSome
+                let st = st |> hideCompletions |> insertChar c
+                if st.Settings.AutoCompleteEvent.IsSome && st |> heuristicAutoComplete wasCompleting c then
+                    st |> updateCompletionWindow
+                else
+                    st
+
+        let private cmdTabOrComplete st =
             if st.Settings.AutoCompleteEvent.IsSome then
+                let mutable shouldComplete = false
                 if st.Settings.TabAtStartCompletes then
-                    complete <- true
+                    shouldComplete <- true
                 else
                     let mutable i = 0
-                    while i < st.Cursor && not complete do
+                    while i < st.Cursor && not shouldComplete do
                         if not (Char.IsWhiteSpace st.Text.[i]) then
-                            complete <- true
+                            shouldComplete <- true
+                        i <- i + 1
 
-                if complete then
-                    let completion = st.Settings.AutoCompleteEvent.Value st.Text st.Cursor
-                    let completions = completion.Result
-                    if completions.Length <> 0 then
-                        if completions.Length = 1 then
-                            st |> insertTextAtCursor completions.[0]
-                        else
-                            let completionsArray = completions |> List.toArray
-                            let last = commonPrefixLength completionsArray
-
-                            let st =
-                                match last with
-                                | Some last ->
-                                    st |> insertTextAtCursor (completionsArray.[0].Substring (0, last+1))
-                                | None -> st
-
-                            Console.WriteLine ()
-                            for s in completions do
-                                Console.Write completion.Prefix
-                                Console.Write s
-                                Console.Write ' '
-
-                            Console.WriteLine ()
-                            st |> render |> forceCursor st.Cursor
-                    else
-                        st
+                if shouldComplete then
+                    st |> complete
                 else
                     st |> handleChar '\t'
             else
@@ -673,10 +897,14 @@ namespace BlackFox
 
         let private cmdBackspace st =
             if st.Cursor <> 0 then
+                let completing = st.CurrentCompletion.IsSome
+                let st = st |> hideCompletions
+
                 let newCursor = st.Cursor - 1
                 let newText = st.Text.Remove (newCursor, 1)
                 let st = { st with Cursor = newCursor; Text = newText; RenderedText = renderText newText}
-                st |> renderAfter newCursor
+                let st = st |> renderAfter newCursor
+                if completing then st |> updateCompletionWindow else st
             else
                 st
 
@@ -732,6 +960,16 @@ namespace BlackFox
             else
                 st
 
+        let private cmdUp st =
+            match st.CurrentCompletion with
+            | None -> st |> cmdHistoryPrev
+            | Some(cs) -> { st with CurrentCompletion = Some(CompletionState.selectPrevious cs) }
+
+        let private cmdDown st =
+            match st.CurrentCompletion with
+            | None -> st |> cmdHistoryNext
+            | Some(cs) -> { st with CurrentCompletion = Some(CompletionState.selectNext cs) }
+
         let private cmdKillToEOF st =
             let newKillBuffer = st.Text.Substring (st.Cursor, st.Text.Length-st.Cursor)
             let newText = st.Text.Substring(0, st.Cursor)
@@ -745,11 +983,11 @@ namespace BlackFox
             match st.SearchState with
             | None ->
                 { st with SearchState = Some { MatchAt = -1; Term = ""; Direction = SearchDirection.Backward } }
-                    |> setSearchPrompt ("")
+                    |> setSearchPrompt ""
             | Some search ->
                 if search.Term = "" then
                     match st.PreviousSearch with
-                    | None | Some("") ->
+                    | None | Some "" ->
                         st
                     | Some previousTerm ->
                         { st with SearchState = Some { search with Term = previousTerm } }
@@ -764,31 +1002,36 @@ namespace BlackFox
                 |> render
                 |> forceCursor st.Cursor
 
+        let private cmdDone st =
+            match st.CurrentCompletion with
+            | Some cs -> st |> insertTextAtCursor (CompletionState.current cs) |> hideCompletions
+            | None -> { st with DoneEditing = true}
+
         let private handlers =
             [|
-                new Handler (Command.Done, ConsoleKey.Enter,      cmdDone)
-                new Handler (Command.Home,ConsoleKey.Home,       cmdHome)
-                new Handler (Command.End,ConsoleKey.End,        cmdEnd)
-                new Handler (Command.Left,ConsoleKey.LeftArrow,  cmdLeft)
-                new Handler (Command.Right,ConsoleKey.RightArrow, cmdRight)
-                new Handler (Command.HistoryPrev,ConsoleKey.UpArrow,    cmdHistoryPrev)
-                new Handler (Command.HistoryNext,ConsoleKey.DownArrow,  cmdHistoryNext)
-                new Handler (Command.Backspace,ConsoleKey.Backspace,  cmdBackspace)
-                new Handler (Command.DeleteChar,ConsoleKey.Delete,     cmdDeleteChar)
-                new Handler (Command.TabOrComplete,ConsoleKey.Tab,        cmdTabOrComplete)
+                new Handler (Command.Done, ConsoleKey.Enter,      cmdDone, false)
+                new Handler (Command.Home,ConsoleKey.Home,       cmdHome, true)
+                new Handler (Command.End,ConsoleKey.End,        cmdEnd, true)
+                new Handler (Command.Left,ConsoleKey.LeftArrow,  cmdLeft, true)
+                new Handler (Command.Right,ConsoleKey.RightArrow, cmdRight, true)
+                new Handler (Command.HistoryPrev,ConsoleKey.UpArrow,    cmdUp, false)
+                new Handler (Command.HistoryNext,ConsoleKey.DownArrow,  cmdDown, false)
+                new Handler (Command.Backspace,ConsoleKey.Backspace,  cmdBackspace, false)
+                new Handler (Command.DeleteChar,ConsoleKey.Delete,     cmdDeleteChar, true)
+                new Handler (Command.TabOrComplete,ConsoleKey.Tab,        cmdTabOrComplete, false)
 
                 // Emacs keys
-                Handler.Control Command.Home 'A' cmdHome
-                Handler.Control Command.End 'E' cmdEnd
-                Handler.Control Command.Left 'B' cmdLeft
-                Handler.Control Command.Right 'F' cmdRight
-                Handler.Control Command.HistoryPrev 'P' cmdHistoryPrev
-                Handler.Control Command.HistoryNext 'N' cmdHistoryNext
-                Handler.Control Command.CmdKillToEOF 'K' cmdKillToEOF
-                Handler.Control Command.Yank 'Y' cmdYank
-                Handler.Control Command.DeleteChar 'D' cmdDeleteChar
-                Handler.Control Command.Refresh 'L' cmdRefresh
-                Handler.Control Command.ReverseSearch 'R' cmdReverseSearch
+                Handler.Control Command.Home 'A' cmdHome true
+                Handler.Control Command.End 'E' cmdEnd true
+                Handler.Control Command.Left 'B' cmdLeft true
+                Handler.Control Command.Right 'F' cmdRight true
+                Handler.Control Command.HistoryPrev 'P' cmdUp false
+                Handler.Control Command.HistoryNext 'N' cmdDown false
+                Handler.Control Command.CmdKillToEOF 'K' cmdKillToEOF true
+                Handler.Control Command.Yank 'Y' cmdYank true
+                Handler.Control Command.DeleteChar 'D' cmdDeleteChar true
+                Handler.Control Command.Refresh 'L' cmdRefresh true
+                Handler.Control Command.ReverseSearch 'R' cmdReverseSearch true
 
                 Handler.Alt Command.BackwardWord 'B' ConsoleKey.B cmdBackwardWord
                 Handler.Alt Command.ForwardWord 'F' ConsoleKey.F cmdForwardWord
@@ -800,7 +1043,7 @@ namespace BlackFox
                 //Handler.Control ('T', CmdDebug),
 
                 // quote
-                Handler.Control Command.Quote 'Q' (fun st -> st |> handleChar ((Console.ReadKey (true)).KeyChar))
+                Handler.Control Command.Quote 'Q' (fun st -> st |> handleChar ((Console.ReadKey true).KeyChar)) true
             |]
 
         let private interruptEdit (thread:Thread) (sender:obj) (a:ConsoleCancelEventArgs) =
@@ -809,13 +1052,6 @@ namespace BlackFox
 
             // Interrupt the editor
             thread.Abort ()
-
-        let private readKeyWithEscMeaningAlt () =
-            let key = Console.ReadKey true
-            if key.Key = ConsoleKey.Escape then
-                Console.ReadKey true, ConsoleModifiers.Alt
-            else
-                key, key.Modifiers
 
         let private tryFindHandler (input:ConsoleKeyInfo) modifier =
             handlers |> Array.tryFind (fun handler ->
@@ -826,19 +1062,30 @@ namespace BlackFox
                 )
 
         let private readOneInput st =
-            let (newInput, modifier) = readKeyWithEscMeaningAlt ()
+            let key = Console.ReadKey true
 
-            let inputHander = tryFindHandler newInput modifier
+            if key.Key = ConsoleKey.Escape && st.CurrentCompletion.IsSome then
+                // Escape closes an open completion popup instead of being treated as an Alt prefix.
+                st |> hideCompletions
+            else
+                let newInput, modifier =
+                    if key.Key = ConsoleKey.Escape then
+                        Console.ReadKey true, ConsoleModifiers.Alt
+                    else
+                        key, key.Modifiers
 
-            match inputHander with
-            | Some(handler) ->
-                let st = handler.KeyHandler st
-                let st = { st with LastCommand = Some handler.HandledCommand }
-                match st.SearchState, handler.HandledCommand with
-                | ( _, Command.ReverseSearch) -> st
-                | (Some(search), _) -> { st with PreviousSearch = Some(search.Term); SearchState = None} |> setPrompt st.SpecifiedPrompt
-                | _ -> st
-            | None -> st |> handleChar (newInput.KeyChar)
+                let inputHander = tryFindHandler newInput modifier
+
+                match inputHander with
+                | Some handler ->
+                    let st = if handler.ResetCompletion then st |> hideCompletions else st
+                    let st = handler.KeyHandler st
+                    let st = { st with LastCommand = Some handler.HandledCommand }
+                    match st.SearchState, handler.HandledCommand with
+                    |  _, Command.ReverseSearch -> st
+                    | Some search, _ -> { st with PreviousSearch = Some search.Term; SearchState = None} |> setPrompt st.SpecifiedPrompt
+                    | _ -> st
+                | None -> st |> handleChar newInput.KeyChar
 
         let rec private readInputUntilDoneEditing = function
             | st when st.DoneEditing -> st
