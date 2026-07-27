@@ -333,6 +333,14 @@ namespace BlackFox
             | Forward = 1
             | Backward = 2
 
+        [<RequireQualifiedAccess>]
+        type HeuristicsMode =
+            /// Do nothing, completion is only triggered explicitly (e.g. by pressing Tab).
+            | None
+            /// Heuristics that make sense for C#-like syntax (trigger completion on '.' outside
+            /// of numeric literals).
+            | CSharp
+
         type GetLineSettings =
             {
                 AppName : string option
@@ -344,9 +352,7 @@ namespace BlackFox
 
                 TabAtStartCompletes : bool
 
-                /// null/None does nothing, Some "csharp" uses some heuristics that make sense for
-                /// C#-like syntax (trigger completion on '.' outside of numeric literals).
-                HeuristicsMode : string option
+                HeuristicsMode : HeuristicsMode
             }
 
         let private defaultSettings =
@@ -355,7 +361,7 @@ namespace BlackFox
                 HistorySize = 10
                 AutoCompleteEvent = None
                 TabAtStartCompletes = true
-                HeuristicsMode = None
+                HeuristicsMode = HeuristicsMode.None
             }
 
         type GetLine =
@@ -801,14 +807,14 @@ namespace BlackFox
         //
         let private heuristicAutoComplete wasCompleting (insertedChar:char) st =
             match st.Settings.HeuristicsMode with
-            | Some "csharp" ->
+            | HeuristicsMode.CSharp ->
                 if wasCompleting then
                     insertedChar <> ' '
                 elif insertedChar = '.' then
                     csharpDotHeuristicTriggersCompletion st.Text st.Cursor
                 else
                     false
-            | _ -> false
+            | HeuristicsMode.None -> false
 
         let private handleChar c st =
             match st.SearchState with

@@ -25,7 +25,7 @@
                     s with
                         AppName = Some("FsGetLineSample")
                         AutoCompleteEvent = Some(autoComplete)
-                        HeuristicsMode = Some("csharp")
+                        HeuristicsMode = FsGetLine.HeuristicsMode.CSharp
                 })
             let mutable s = Some("")
             while s.IsSome do
