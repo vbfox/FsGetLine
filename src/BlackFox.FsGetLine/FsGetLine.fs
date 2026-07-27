@@ -516,7 +516,7 @@ namespace BlackFox
             let builder = text |> AnsiControlCodes.fold
                             (fun (b:StringBuilder) c ->
                                 if c = '\t' then
-                                    b.Append("    ")
+                                    b.Append "    "
                                 else
                                     b.Append(ColoredString.EscapeToString(string c)))
                             (fun b c -> b.Append(sprintf "^[DarkGreen]^^^[Green]%c^[Reset]" (AnsiControlCodes.toDisplayableChar c)))
@@ -602,7 +602,7 @@ namespace BlackFox
 
         let private setText newtext st =
             Console.SetCursorPosition (0, st.HomeRow)
-            st |> initText (newtext)
+            st |> initText newtext
 
         let private setPromptCore newprompt st =
             Console.SetCursorPosition (0, st.HomeRow)
@@ -628,7 +628,7 @@ namespace BlackFox
                 let mutable p = -1
                 if st.Cursor = st.Text.Length then
                     // The cursor is at the end of the string
-                    p <- st.Text.LastIndexOf (search.Term)
+                    p <- st.Text.LastIndexOf search.Term
                 else
                     // The cursor is somewhere in the middle of the string
                     let start = if st.Cursor = search.MatchAt then st.Cursor - 1 else st.Cursor
@@ -639,10 +639,10 @@ namespace BlackFox
                 else
                     // Need to search backwards in history
                     let st = st |> historyUpdateLine
-                    let (newHistory, searchResult) = History.searchBackward search.Term st.History
+                    let newHistory, searchResult = History.searchBackward search.Term st.History
                     let st = { st with History = newHistory }
                     match searchResult with
-                    | Some(_) ->
+                    | Some _ ->
                         { st with SearchState = Some { search with MatchAt = -1 } }
                             |> setText searchResult
                             |> reverseSearch
@@ -670,7 +670,7 @@ namespace BlackFox
         let private hideCompletions st =
             match st.CurrentCompletion with
             | None -> st
-            | Some(cs) ->
+            | Some cs ->
                 CompletionState.remove cs
                 { st with CurrentCompletion = None }
 
@@ -709,7 +709,7 @@ namespace BlackFox
                     { CompletionState.create left (Console.CursorTop + 1) windowWidth windowHeight with
                         Prefix = prefix
                         Completions = completionsArray }
-                | Some(cs) -> { cs with Prefix = prefix; Completions = completionsArray }
+                | Some cs -> { cs with Prefix = prefix; Completions = completionsArray }
 
             let currentCompletion = CompletionState.show currentCompletion
             Console.CursorLeft <- 0
@@ -738,11 +738,9 @@ namespace BlackFox
                         p <- p + 1
                 last
 
-        //
-        // Triggers the completion engine. This will insert the best match found, then behaves
-        // like the shell "tab" which will complete as much as possible given the options, and
-        // shows a popup with the remaining choices if there is more than one.
-        //
+        /// Triggers the completion engine. This will insert the best match found, then behaves
+        /// like the shell "tab" which will complete as much as possible given the options, and
+        /// shows a popup with the remaining choices if there is more than one.
         let private complete st =
             let completion = st.Settings.AutoCompleteEvent.Value st.Text st.Cursor
             match completion.Result with
@@ -768,10 +766,8 @@ namespace BlackFox
                 let st = st |> showCompletions prefix completions |> render
                 st |> forceCursor st.Cursor
 
-        //
-        // When the user has triggered a completion window via the heuristics, this will try to
-        // update the contents of it. The completion window is assumed to be hidden at this point.
-        //
+        /// When the user has triggered a completion window via the heuristics, this will try to
+        /// update the contents of it. The completion window is assumed to be hidden at this point.
         let private updateCompletionWindow st =
             if st.CurrentCompletion.IsSome then
                 failwith "This method should only be called if the window has been hidden"
@@ -802,9 +798,7 @@ namespace BlackFox
             else
                 true
 
-        //
-        // Implements heuristics to show the completion window based on the mode
-        //
+        /// Implements heuristics to show the completion window based on the mode
         let private heuristicAutoComplete wasCompleting (insertedChar:char) st =
             match st.Settings.HeuristicsMode with
             | HeuristicsMode.CSharp ->
@@ -822,7 +816,7 @@ namespace BlackFox
             | None ->
                 let wasCompleting = st.CurrentCompletion.IsSome
                 let st = st |> hideCompletions |> insertChar c
-                if st.Settings.AutoCompleteEvent.IsSome && (st |> heuristicAutoComplete wasCompleting c) then
+                if st.Settings.AutoCompleteEvent.IsSome && st |> heuristicAutoComplete wasCompleting c then
                     st |> updateCompletionWindow
                 else
                     st
@@ -989,11 +983,11 @@ namespace BlackFox
             match st.SearchState with
             | None ->
                 { st with SearchState = Some { MatchAt = -1; Term = ""; Direction = SearchDirection.Backward } }
-                    |> setSearchPrompt ("")
+                    |> setSearchPrompt ""
             | Some search ->
                 if search.Term = "" then
                     match st.PreviousSearch with
-                    | None | Some("") ->
+                    | None | Some "" ->
                         st
                     | Some previousTerm ->
                         { st with SearchState = Some { search with Term = previousTerm } }
@@ -1010,7 +1004,7 @@ namespace BlackFox
 
         let private cmdDone st =
             match st.CurrentCompletion with
-            | Some(cs) -> st |> insertTextAtCursor (CompletionState.current cs) |> hideCompletions
+            | Some cs -> st |> insertTextAtCursor (CompletionState.current cs) |> hideCompletions
             | None -> { st with DoneEditing = true}
 
         let private handlers =
@@ -1049,7 +1043,7 @@ namespace BlackFox
                 //Handler.Control ('T', CmdDebug),
 
                 // quote
-                Handler.Control Command.Quote 'Q' (fun st -> st |> handleChar ((Console.ReadKey (true)).KeyChar)) true
+                Handler.Control Command.Quote 'Q' (fun st -> st |> handleChar ((Console.ReadKey true).KeyChar)) true
             |]
 
         let private interruptEdit (thread:Thread) (sender:obj) (a:ConsoleCancelEventArgs) =
@@ -1088,8 +1082,8 @@ namespace BlackFox
                     let st = handler.KeyHandler st
                     let st = { st with LastCommand = Some handler.HandledCommand }
                     match st.SearchState, handler.HandledCommand with
-                    | ( _, Command.ReverseSearch) -> st
-                    | (Some search, _) -> { st with PreviousSearch = Some search.Term; SearchState = None} |> setPrompt st.SpecifiedPrompt
+                    |  _, Command.ReverseSearch -> st
+                    | Some search, _ -> { st with PreviousSearch = Some search.Term; SearchState = None} |> setPrompt st.SpecifiedPrompt
                     | _ -> st
                 | None -> st |> handleChar newInput.KeyChar
 

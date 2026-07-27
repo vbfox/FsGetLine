@@ -21,12 +21,12 @@ let private tryParseColor (s:string) =
         | :? OverflowException -> NoColor
 
 let private parseColorCodes (s:string) =
-    let split = s.Split(';')
+    let split = s.Split ';'
 
     let foreground = if split.Length >= 1 then tryParseColor split.[0] else NoColor
     let background = if split.Length >= 2 then tryParseColor split.[1] else NoColor
 
-    (foreground, background)
+    foreground, background
 
 /// Support color markers in strings like ^[Red] or ^[Red;Blue] where the first color is
 /// the foreground and the second the background.
@@ -39,27 +39,27 @@ type ColoredString(raw : string) =
         s.Replace("^", "^^")
 
     static member public Escape (s:string) =
-        new ColoredString(ColoredString.EscapeToString(s))
+        new ColoredString(ColoredString.EscapeToString s)
 
-    member private __.Fold (onChar: OnCharParsed<'st>) (onColor: OnColorParsed<'st>) (st:'st) = 
+    member private __.Fold (onChar: OnCharParsed<'st>) (onColor: OnColorParsed<'st>) (st:'st) =
         let foldFunc (st, escCount, content) c =
             match escCount with
             | 0 ->
                 match c with
-                | '^' -> (st, 1, "")
-                | _ -> (onChar st c, 0, "")
+                | '^' -> st, 1, ""
+                | _ -> onChar st c, 0, ""
             | 1 ->
                 match c with
-                | '[' -> (st, 2, "")
-                | _ -> (onChar st c, 0, "")
+                | '[' -> st, 2, ""
+                | _ -> onChar st c, 0, ""
             | 2 ->
                 match c with
-                | ']' -> (onColor st (parseColorCodes content), 0, "")
-                | _ -> (st, 2, content + (string)c)
+                | ']' -> onColor st (parseColorCodes content), 0, ""
+                | _ -> st, 2, content + string c
             | _ ->
-                failwith("Impossible escape count")
+                failwith "Impossible escape count"
 
-        let (newSt, _, _) = raw |> Seq.fold foldFunc (st, 0, "")
+        let newSt, _, _ = raw |> Seq.fold foldFunc (st, 0, "")
         newSt
 
     member x.Length
@@ -86,14 +86,14 @@ type ColoredString(raw : string) =
         let setColors foreground background =
             setForeground foreground
             setBackground background
-                        
+
         inner setColors
 
         setColors Reset Reset
 
     member x.WriteToConsole () =
         x.WriteCore (fun setColors ->
-            x.Fold (fun _ c -> Console.Write(c)) (fun _ (foreground, background) -> setColors foreground background) ()
+            x.Fold (fun _ c -> Console.Write c) (fun _ (foreground, background) -> setColors foreground background) ()
             )
 
     member x.WriteToConsoleFrom from =
@@ -115,4 +115,4 @@ let coloredWrite s =
 
 let coloredWriteLine s =
     coloredWrite s
-    Console.WriteLine()
+    Console.WriteLine ()
