@@ -7,5 +7,7 @@ group Build
     Fake.DotNet.Cli
     Fake.IO.FileSystem
     Fake.BuildServer.GitHubActions
+    Fake.Api.GitHub
+    Fake.Tools.Git
     BlackFox.Fake.BuildTask
     BlackFox.CommandLine

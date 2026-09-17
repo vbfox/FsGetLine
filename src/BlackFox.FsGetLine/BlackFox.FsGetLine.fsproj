@@ -7,8 +7,16 @@
     <RealSig>true</RealSig>
   </PropertyGroup>
 
+  <PropertyGroup>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <AllowedOutputExtensionsInPackageBuildOutputFolder>$(AllowedOutputExtensionsInPackageBuildOutputFolder);.pdb</AllowedOutputExtensionsInPackageBuildOutputFolder>
+  </PropertyGroup>
+
   <ItemGroup>
-    <None Include="paket.references" />
+    <None Include="../../README.md" Pack="true" PackagePath="\" />
     <Compile Include="InternalsVisibleTo.fs" />
     <Compile Include="ColoredString.fs" />
     <Compile Include="FsGetLine.fs" />

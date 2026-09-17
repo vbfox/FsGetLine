@@ -1,8 +1,8 @@
 @echo off
 
-call paket.cmd restore
+call "%~dp0paket.cmd" restore
 if errorlevel 1 (
   exit /b %errorlevel%
 )
 
-dotnet run --project build\BlackFox.FsGetLine.Build.fsproj -- %*
+dotnet run --project "%~dp0build\BlackFox.FsGetLine.Build.fsproj" -- %*

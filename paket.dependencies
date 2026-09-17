@@ -22,5 +22,7 @@ group Build
     nuget Fake.DotNet.Cli
     nuget Fake.IO.FileSystem
     nuget Fake.BuildServer.GitHubActions
+    nuget Fake.Api.GitHub
+    nuget Fake.Tools.Git
     nuget BlackFox.Fake.BuildTask
     nuget BlackFox.CommandLine

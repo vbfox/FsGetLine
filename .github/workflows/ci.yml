@@ -25,6 +25,8 @@ jobs:
         with:
           name: nuget-packages
           path: artifacts/*.nupkg
+          if-no-files-found: error
+          compression-level: 0
 
   windows:
     runs-on: windows-latest
