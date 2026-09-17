@@ -3,6 +3,9 @@ FsGetLine
 
 [![CI](https://github.com/vbfox/FsGetLine/actions/workflows/ci.yml/badge.svg)](https://github.com/vbfox/FsGetLine/actions/workflows/ci.yml)
 
+[![Nuget Package](https://img.shields.io/nuget/v/BlackFox.CachedFSharpReflection.svg)](https://www.nuget.org/packages/BlackFox.CachedFSharpReflection)
+
+
 This repository contains an implementation of 'getline' in F#.
 
 The original version is [getline.cs][1] by Miguel de Icaza as described
